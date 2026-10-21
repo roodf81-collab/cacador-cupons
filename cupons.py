@@ -340,8 +340,10 @@ def executar_varredura():
     agora_br = datetime.now(fuso_brasil)
     horario_envio = agora_br.strftime("%d/%m/%Y às %H:%M")
 
-    # Modo silencioso entre 23:00 e 07:00 (não vibra/não acorda de madrugada)
-    eh_madrugada = agora_br.hour >= 23 or agora_br.hour < 7
+    # Não verifica entre 23:00 e 07:00 (repouso na madrugada)
+    if agora_br.hour >= 23 or agora_br.hour < 7:
+        print(f"[{horario_envio}] Período noturno (23h às 07h). Varredura suspensa para repouso.")
+        return
 
     coletas = [
         buscar_cupons_pelando(),
@@ -375,8 +377,7 @@ def executar_varredura():
             "────────────────────────────────\n"
             f"⏱️ <i>Verificado em: {horario_envio}</i>"
         )
-        # Se for madrugada (23h-7h), manda silencioso para não acordar
-        enviar_telegram(chat_id, msg_sem_cupom, silencioso=eh_madrugada)
+        enviar_telegram(chat_id, msg_sem_cupom)
         salvar_memoria(memoria_cupons)
         return
 
@@ -386,9 +387,8 @@ def executar_varredura():
     # Envio Mercado Livre com botão direto para a loja
     if novos_ml:
         tabela_ml = formatar_tabela_loja("Mercado Livre", "💛", list(novos_ml.values()))
-        aviso_noturno = " 🌙 <i>(Silencioso da madrugada)</i>" if eh_madrugada else ""
         msg_ml = (
-            f"🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>{aviso_noturno}\n\n"
+            "🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>\n\n"
             f"{tabela_ml}\n"
             f"⏱️ <i>Verificado em: {horario_envio}</i>"
         )
@@ -400,16 +400,15 @@ def executar_varredura():
                 }
             ]
         ]
-        enviar_telegram(chat_id, msg_ml, botoes=botoes_ml, silencioso=eh_madrugada)
+        enviar_telegram(chat_id, msg_ml, botoes=botoes_ml)
         for cod in novos_ml:
             memoria_cupons[cod] = agora_iso
 
     # Envio Shopee com botão direto para a página de cupons
     if novos_shopee:
         tabela_shopee = formatar_tabela_loja("Shopee", "🧡", list(novos_shopee.values()))
-        aviso_noturno = " 🌙 <i>(Silencioso da madrugada)</i>" if eh_madrugada else ""
         msg_shopee = (
-            f"🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>{aviso_noturno}\n\n"
+            "🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>\n\n"
             f"{tabela_shopee}\n"
             f"⏱️ <i>Verificado em: {horario_envio}</i>"
         )
@@ -421,7 +420,7 @@ def executar_varredura():
                 }
             ]
         ]
-        enviar_telegram(chat_id, msg_shopee, botoes=botoes_shopee, silencioso=eh_madrugada)
+        enviar_telegram(chat_id, msg_shopee, botoes=botoes_shopee)
         for cod in novos_shopee:
             memoria_cupons[cod] = agora_iso
 

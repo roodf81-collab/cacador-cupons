@@ -2,7 +2,8 @@ name: Caçador de Cupons
 
 on:
   schedule:
-    - cron: '*/20 * * * *'
+    # Roda a cada 20 min entre 07:00 e 22:59 (Horário de Brasília = 10:00 às 01:59 UTC)
+    - cron: '*/20 10-23,0-1 * * *'
   workflow_dispatch:
 
 concurrency:
