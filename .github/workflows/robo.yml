@@ -15,6 +15,7 @@ permissions:
 jobs:
   buscar-cupons:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
       - name: Baixar código e histórico
         uses: actions/checkout@v4
@@ -37,6 +38,4 @@ jobs:
           git config user.name "Bot de Cupons"
           git config user.email "bot@github.com"
           git add historico.txt meu_id.txt || true
-          git diff --staged --quiet || git commit -m "Atualiza memória de cupons"
-          git pull --rebase --autostash origin main
-          git push
+          git diff --staged --quiet || (git commit -m "Atualiza memória de cupons" && git push --force-with-lease origin HEAD:main)
