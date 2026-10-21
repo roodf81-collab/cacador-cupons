@@ -32,6 +32,6 @@ jobs:
         run: |
           git config user.name "Bot de Cupons"
           git config user.email "bot@github.com"
-          git add historico.txt || true
+         git add historico.txt meu_id.txt || true
           git diff --staged --quiet || git commit -m "Atualiza memória de cupons"
           git push
