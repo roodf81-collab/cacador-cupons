@@ -1,77 +1,48 @@
-from datetime import datetime, timedelta, timezone
-import hashlib
+import html
 import os
 import re
-from bs4 import BeautifulSoup
+from datetime import datetime, timedelta, timezone
 import requests
+from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
-# Canais gerais + canais com forte presença de Shopee
-MEUS_CANAIS = [
-    "promobitoficial",
-    "pelando",
-    "economizeiro",
-    "gafanhotocupons",
-    "pechinchou",
-    "canaltechofertas",
-    "achadinhosdashopee",
-    "descontostop",
-]
-
-# Fontes da Web reforçadas para Shopee e Mercado Livre
-SITES_WEB = [
-    ("Mercado Livre", "https://www.cuponomia.com.br/desconto/mercado-livre"),
-    ("Shopee", "https://www.cuponomia.com.br/desconto/shopee"),
-    ("Shopee", "https://www.meliuz.com.br/desconto/cupom-shopee"),
-]
-
 ARQUIVO_MEMORIA = "historico.txt"
 ARQUIVO_ID = "meu_id.txt"
 
-# 1. Padrão para códigos digitáveis (Mercado Livre e Shopee)
-PADRAO_CUPOM = re.compile(
-    r"(?:cupom|código|codigo|use|aplique|cód|code|promo)[:\s*`\"'\-👉]*([A-Z0-9]{4,18})",
-    re.IGNORECASE,
-)
+# Canais públicos de promoções no Telegram
+CANAIS_TELEGRAM = [
+    "pechinchou",
+    "canaltechofertas",
+    "canalpromocoes",
+    "achadinhosdashopee",
+    "radarcupons",
+]
 
-# 2. Padrão para links diretos da Shopee (quando o cupom é de clicar/resgatar)
-PADRAO_LINK_SHOPEE = re.compile(
-    r"(https?://(?:s\.shopee\.com\.br|shp\.ee|shopee\.com\.br)/[^\s)\"<>]+)",
-    re.IGNORECASE,
-)
-
+# Palavras que não são cupons reais
 PALAVRAS_IGNORAR = {
-    "NO",
-    "NA",
-    "DO",
-    "DA",
-    "DE",
-    "AQUI",
-    "LINK",
-    "APP",
-    "TELA",
-    "HOJE",
-    "PARA",
-    "COM",
-    "MAIS",
-    "SITE",
-    "LOJA",
-    "ESSE",
-    "ESTE",
-    "NOVO",
-    "CUPOM",
-    "SHOPEE",
-    "MELI",
-    "LIVRE",
-    "GRATIS",
-    "FRETE",
-    "TODOS",
-    "TODAS",
-    "LIBERADO",
-    "DISPONIVEL",
-    "RESGATE",
-    "ABAIXO",
+    "CUPOM", "CUPONS", "SHOPEE", "MELI", "LIVRE", "MERCADO", "MERCADOLIVRE",
+    "AQUI", "LINK", "NOLINK", "APROVEITE", "RESGATE", "RESGATAR", "CONFIRA",
+    "NOVO", "NOVA", "HOJE", "TODOS", "TODAS", "FRETE", "GRATIS", "OFF",
+    "SITE", "APP", "DESCONTO", "DESCONTOS", "OFERTA", "OFERTAS", "PROMO",
+    "PROMOCIONAL", "ESPECIAL", "COMPRE", "SELECAO", "SELECIONADOS", "VALE",
+    "TELA", "ABAIXO", "DENTRO", "ANTES", "ESCOLHIDA", "MUITOBARATO", "COPIADO",
+    "CUPONADO", "CUPONADA", "FINALIZAR", "PAGINA", "PRODUTO", "PRODUTOS",
+    "VOUCHER", "VOUCHERS", "EXCLUSIVO", "EXCLUSIVA", "PRIMEIRA", "COMPRA",
+    "REGRAS", "TERMOS", "CONDICOES", "BOASCOMPRAS", "PARABENS",
+}
+
+# Regex estrito para identificar códigos reais
+# Exige que seja de 4 a 22 chars alfanuméricos e descarta se for apenas texto sem contexto
+PADRAO_CUPOM_TEXTO = re.compile(
+    r"(?:cupom|c[oó]digo|use|aplique|c[oó]d|code|voucher)[:\s*`\"'\-👉]*([A-Z0-9_\-]{4,22})",
+    re.IGNORECASE,
+)
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    )
 }
 
 
@@ -79,17 +50,52 @@ def carregar_memoria():
     if not os.path.exists(ARQUIVO_MEMORIA):
         return set()
     with open(ARQUIVO_MEMORIA, "r", encoding="utf-8") as f:
-        return set(linha.strip() for linha in f if linha.strip())
+        return set(linha.strip().upper() for linha in f if linha.strip())
 
 
 def salvar_memoria(cupons):
-    lista_recente = list(cupons)[-600:]
+    # Mantém os últimos 1000 cupons
+    lista = list(cupons)[-1000:]
     with open(ARQUIVO_MEMORIA, "w", encoding="utf-8") as f:
-        for c in lista_recente:
+        for c in lista:
             f.write(f"{c}\n")
 
 
-def enviar_telegram(chat_id, texto):
+def obter_chat_id():
+    # 1. Tenta variável de ambiente se configurada nos Secrets
+    chat_id = os.environ.get("CHAT_ID")
+    if chat_id:
+        return str(chat_id).strip()
+
+    # 2. Tenta arquivo local
+    if os.path.exists(ARQUIVO_ID):
+        with open(ARQUIVO_ID, "r", encoding="utf-8") as f:
+            cid = f.read().strip()
+            if cid:
+                return cid
+
+    # 3. Tenta via getUpdates do Telegram
+    if BOT_TOKEN:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+            resp = requests.get(url, timeout=10).json()
+            mensagens = resp.get("result", [])
+            if mensagens:
+                cid = str(mensagens[-1]["message"]["chat"]["id"])
+                with open(ARQUIVO_ID, "w", encoding="utf-8") as f:
+                    f.write(cid)
+                return cid
+        except Exception as e:
+            print(f"Erro ao obter Chat ID via getUpdates: {e}")
+
+    return None
+
+
+def enviar_mensagem_telegram(chat_id, texto):
+    if not BOT_TOKEN or not chat_id:
+        print("BOT_TOKEN ou CHAT_ID não definidos.")
+        return False
+
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": chat_id,
@@ -97,177 +103,293 @@ def enviar_telegram(chat_id, texto):
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-    requests.post(url, json=payload, timeout=10)
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if not r.ok:
+            print(f"Erro ao enviar para Telegram: {r.status_code} - {r.text}")
+            return False
+        return True
+    except Exception as e:
+        print(f"Exceção ao enviar Telegram: {e}")
+        return False
 
 
-def obter_meu_contato():
-    if os.path.exists(ARQUIVO_ID):
-        with open(ARQUIVO_ID, "r", encoding="utf-8") as f:
-            meu_id = f.read().strip()
-            if meu_id:
-                return meu_id
-
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    dados = requests.get(url, timeout=10).json()
-    mensagens = dados.get("result", [])
-    if not mensagens:
-        return None
-
-    meu_id = str(mensagens[-1]["message"]["chat"]["id"])
-    with open(ARQUIVO_ID, "w", encoding="utf-8") as f:
-        f.write(meu_id)
-    return meu_id
+def e_cupom_valido(codigo):
+    if not codigo:
+        return False
+    codigo = codigo.strip().upper()
+    if len(codigo) < 4 or len(codigo) > 22:
+        return False
+    if codigo.isdigit():
+        return False
+    if codigo in PALAVRAS_IGNORAR:
+        return False
+    # Evita links ou parâmetros URL acidentais
+    if any(x in codigo for x in ["HTTP", "WWW", ".COM", ".BR", "/", "="]):
+        return False
+    return True
 
 
-def identificar_loja(texto_min):
-    if any(
-        x in texto_min
-        for x in ["shopee", "s.shopee.com.br", "shp.ee", "moedas shopee"]
-    ):
-        return "Shopee"
-    elif any(
-        x in texto_min
-        for x in ["mercado livre", "mercadolivre", "meli", "mercadolivre.com"]
-    ):
-        return "Mercado Livre"
-    return None
+def buscar_cupons_pelando():
+    """Busca cupons específicos com regras e limites no Pelando."""
+    fontes = [
+        ("Mercado Livre", "https://www.pelando.com.br/cupons-de-descontos/mercadolivre.com.br"),
+        ("Shopee", "https://www.pelando.com.br/cupons-de-descontos/shopee.com.br"),
+    ]
+    resultados = {"Mercado Livre": [], "Shopee": []}
 
-
-def executar_varredura():
-    chat_id = obter_meu_contato()
-    if not chat_id:
-        print("Chat ID não encontrado.")
-        return
-
-    ja_enviados = carregar_memoria()
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-
-    fuso_brasil = timezone(timedelta(hours=-3))
-    horario_envio = datetime.now(fuso_brasil).strftime("%d/%m/%Y às %H:%M")
-
-    novos_por_loja = {"Mercado Livre": [], "Shopee": []}
-
-    # 1. Vasculha os canais do Telegram
-    for canal in MEUS_CANAIS:
+    for loja, url in fontes:
         try:
-            html = requests.get(
-                f"https://t.me/s/{canal}", headers=headers, timeout=10
-            ).text
-            soup = BeautifulSoup(html, "html.parser")
+            r = requests.get(url, headers=HEADERS, timeout=8)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            cards = soup.find_all(class_="store-coupons-v2__list")
+            for card in cards:
+                for item in card.find_all(["article", "li"]):
+                    code_el = item.find(class_="card__code-text")
+                    if not code_el:
+                        continue
+                    codigo = code_el.get_text(strip=True).upper()
+                    if not e_cupom_valido(codigo):
+                        continue
+
+                    # Descrição/Título do desconto (ex: 'R$40 OFF acima de R$199')
+                    title_el = item.find("h3") or item.find(class_="card__title")
+                    detalhe = title_el.get_text(strip=True) if title_el else ""
+                    # Limpa prefixos redundantes
+                    detalhe = re.sub(r"^\[.*?\]\s*", "", detalhe)
+                    detalhe = re.sub(r"^Cupom\s+(Mercado\s+Livre|Shopee)\s*[-:]*\s*", "", detalhe, flags=re.IGNORECASE)
+
+                    resultados[loja].append({
+                        "codigo": codigo,
+                        "descricao": detalhe.strip()[:90],
+                        "origem": "Pelando",
+                    })
+        except Exception as e:
+            print(f"Erro ao buscar Pelando ({loja}): {e}")
+
+    return resultados
+
+
+def buscar_cupons_cuponomia():
+    """Busca códigos no Cuponomia."""
+    fontes = [
+        ("Mercado Livre", "https://www.cuponomia.com.br/desconto/mercado-livre"),
+        ("Shopee", "https://www.cuponomia.com.br/desconto/shopee"),
+    ]
+    resultados = {"Mercado Livre": [], "Shopee": []}
+
+    for loja, url in fontes:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=8)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            for code_el in soup.find_all(class_="js-itemCode"):
+                codigo = code_el.get_text(strip=True).upper()
+                if not e_cupom_valido(codigo):
+                    continue
+
+                parent = code_el.find_parent("li") or code_el.find_parent("div")
+                title_el = parent.find(class_="item-title") if parent else None
+                detalhe = title_el.get_text(strip=True) if title_el else ""
+                detalhe = re.sub(r"\+\s*\d+.*cashback.*$", "", detalhe, flags=re.IGNORECASE)
+
+                resultados[loja].append({
+                    "codigo": codigo,
+                    "descricao": detalhe.strip()[:90],
+                    "origem": "Cuponomia",
+                })
+        except Exception as e:
+            print(f"Erro ao buscar Cuponomia ({loja}): {e}")
+
+    return resultados
+
+
+def buscar_cupons_meliuz():
+    """Busca códigos no Méliuz."""
+    fontes = [
+        ("Mercado Livre", "https://www.meliuz.com.br/desconto/mercado-livre"),
+        ("Shopee", "https://www.meliuz.com.br/desconto/cupom-shopee"),
+    ]
+    resultados = {"Mercado Livre": [], "Shopee": []}
+
+    for loja, url in fontes:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=8)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
+
+            for btn in soup.find_all(class_="code-btn__value"):
+                codigo = btn.get_text(strip=True).upper()
+                if not e_cupom_valido(codigo):
+                    continue
+
+                parent = btn.find_parent(class_=re.compile(r"offer|card", re.I)) or btn.find_parent("li")
+                title_el = parent.find(class_=re.compile(r"title", re.I)) if parent else None
+                detalhe = title_el.get_text(strip=True) if title_el else ""
+
+                resultados[loja].append({
+                    "codigo": codigo,
+                    "descricao": detalhe.strip()[:90],
+                    "origem": "Méliuz",
+                })
+        except Exception as e:
+            print(f"Erro ao buscar Méliuz ({loja}): {e}")
+
+    return resultados
+
+
+def buscar_cupons_telegram():
+    """Vasculha canais públicos de promoções procurando estritamente cupons ML e Shopee."""
+    resultados = {"Mercado Livre": [], "Shopee": []}
+
+    for canal in CANAIS_TELEGRAM:
+        try:
+            r = requests.get(f"https://t.me/s/{canal}", headers=HEADERS, timeout=6)
+            if r.status_code != 200:
+                continue
+            soup = BeautifulSoup(r.text, "html.parser")
             postagens = soup.find_all("div", class_="tgme_widget_message_text")
 
-            for post in postagens[-20:]:
+            for post in postagens[-15:]:
                 texto = post.get_text(separator=" ")
                 texto_min = texto.lower()
-                loja = identificar_loja(texto_min)
+
+                # Identifica se refere-se a Shopee ou Mercado Livre
+                loja = None
+                if any(k in texto_min for k in ["shopee", "shp.ee", "s.shopee"]):
+                    loja = "Shopee"
+                elif any(k in texto_min for k in ["mercado livre", "mercadolivre", "meli"]):
+                    loja = "Mercado Livre"
+
                 if not loja:
                     continue
 
-                resumo = (
-                    texto[:100].strip() + "..."
-                    if len(texto) > 100
-                    else texto.strip()
-                )
-                achou_codigo = False
-
-                # A) Tenta achar código digitável (Ex: GANHE20)
-                for match in PADRAO_CUPOM.finditer(texto):
+                # Procura padrões de cupom no texto
+                for match in PADRAO_CUPOM_TEXTO.finditer(texto):
                     codigo = match.group(1).upper()
-                    if (
-                        codigo not in PALAVRAS_IGNORAR
-                        and not codigo.isdigit()
-                        and codigo not in ja_enviados
-                    ):
-                        ja_enviados.add(codigo)
-                        achou_codigo = True
-                        novos_por_loja[loja].append(
-                            f"• 🎟️ Código: <code>{codigo}</code> (@{canal})\n  <i>{resumo}</i>"
-                        )
+                    if not e_cupom_valido(codigo):
+                        continue
 
-                # B) Especial Shopee: se a postagem fala de "cupom" na Shopee, mas é por LINK de resgate
-                if (
-                    loja == "Shopee"
-                    and not achou_codigo
-                    and "cupom" in texto_min
-                ):
-                    links = PADRAO_LINK_SHOPEE.findall(texto)
-                    # Pega também links que estão escondidos nos botões/âncoras do HTML
-                    if not links:
-                        for a in post.find_all("a", href=True):
-                            if "shopee" in a["href"] or "shp.ee" in a["href"]:
-                                links.append(a["href"])
+                    # Pega primeira frase limpa para servir de contexto do desconto
+                    linhas = [l.strip() for l in texto.split("\n") if l.strip()]
+                    descricao = ""
+                    for l in linhas:
+                        if any(term in l.lower() for term in ["off", "r$", "%", "desconto"]):
+                            descricao = l[:80]
+                            break
 
-                    if links:
-                        link_cupom = links[0]
-                        id_unico = (
-                            "SHP_"
-                            + hashlib.md5(link_cupom.encode()).hexdigest()[:10]
-                        )
-                        if id_unico not in ja_enviados:
-                            ja_enviados.add(id_unico)
-                            novos_por_loja["Shopee"].append(
-                                f"• 🔗 <b>Cupom de Resgate no App</b> (@{canal})\n"
-                                f"  👉 <a href='{link_cupom}'>Clique aqui para resgatar na Shopee</a>\n"
-                                f"  <i>{resumo}</i>"
-                            )
+                    resultados[loja].append({
+                        "codigo": codigo,
+                        "descricao": descricao,
+                        "origem": f"Telegram (@{canal})",
+                    })
         except Exception as e:
-            print(f"Erro no canal {canal}: {e}")
+            print(f"Erro no canal @{canal}: {e}")
 
-    # 2. Vasculha páginas da Web
-    for loja, url in SITES_WEB:
-        try:
-            html = requests.get(url, headers=headers, timeout=10).text
-            soup = BeautifulSoup(html, "html.parser")
-            texto_web = soup.get_text(separator=" ")
+    return resultados
 
-            for match in PADRAO_CUPOM.finditer(texto_web):
-                codigo = match.group(1).upper()
-                if (
-                    codigo not in PALAVRAS_IGNORAR
-                    and not codigo.isdigit()
-                    and codigo not in ja_enviados
-                ):
-                    ja_enviados.add(codigo)
-                    novos_por_loja[loja].append(
-                        f"• 🎟️ Código: <code>{codigo}</code> | Fonte: Web"
-                    )
-        except Exception as e:
-            print(f"Erro no site {loja}: {e}")
 
-    total_novos = len(novos_por_loja["Mercado Livre"]) + len(
-        novos_por_loja["Shopee"]
-    )
+def formatar_tabela_loja(nome_loja, emoji_loja, cupons):
+    """
+    Formata os cupons em estilo de tabela limpa.
+    O código fica em <code>CUPOM</code> para copiar com 1 toque no celular.
+    """
+    if not cupons:
+        return ""
 
-    # 3. Monta a mensagem final separada por loja
-    if total_novos > 0:
-        partes_msg = ["🛒 <b>RELATÓRIO DE NOVOS CUPONS</b>\n"]
+    linhas = [
+        f"{emoji_loja} <b>{nome_loja.upper()}</b>",
+        "┌────────────────────────────────",
+    ]
 
-        if novos_por_loja["Mercado Livre"]:
-            partes_msg.append("💛 <b>MERCADO LIVRE</b>")
-            partes_msg.append("──────────────────")
-            partes_msg.extend(novos_por_loja["Mercado Livre"][:10])
-            partes_msg.append("")
+    for item in cupons:
+        codigo = item["codigo"]
+        desc = html.escape(item.get("descricao", ""))
+        origem = html.escape(item.get("origem", ""))
 
-        if novos_por_loja["Shopee"]:
-            partes_msg.append("🧡 <b>SHOPEE</b>")
-            partes_msg.append("──────────────────")
-            partes_msg.extend(novos_por_loja["Shopee"][:10])
-            partes_msg.append("")
+        linhas.append(f"│ 🎟️ <b>Cupom:</b> <code>{codigo}</code> <i>(toque p/ copiar)</i>")
+        if desc:
+            linhas.append(f"│ 📝 {desc}")
+        if origem:
+            linhas.append(f"│ 📌 Fonte: {origem}")
+        linhas.append("├────────────────────────────────")
 
-        partes_msg.append("──────────────────")
-        partes_msg.append(f"⏱️ <i>Verificado em: {horario_envio}</i>")
+    # Substitui a última linha separadora pelo fechamento da caixa
+    linhas[-1] = "└────────────────────────────────"
+    return "\n".join(linhas)
 
-        enviar_telegram(chat_id, "\n".join(partes_msg))
-        salvar_memoria(ja_enviados)
-    else:
-        msg_sem_cupom = (
-            "✅ <b>STATUS DO BOT: ATIVO</b>\n"
-            "──────────────────\n"
-            "🔍 Fiz a varredura nos canais e na web, mas <b>não há novos cupons</b> da Shopee ou Mercado Livre neste momento.\n"
-            "──────────────────\n"
+
+def executar_varredura():
+    chat_id = obter_chat_id()
+    if not chat_id:
+        print("Chat ID não encontrado. O bot não pode enviar mensagens.")
+        return
+
+    ja_enviados = carregar_memoria()
+    fuso_brasil = timezone(timedelta(hours=-3))
+    horario_envio = datetime.now(fuso_brasil).strftime("%d/%m/%Y às %H:%M")
+
+    # Coleta de todas as fontes
+    coletas = [
+        buscar_cupons_pelando(),
+        buscar_cupons_cuponomia(),
+        buscar_cupons_meliuz(),
+        buscar_cupons_telegram(),
+    ]
+
+    novos_ml = {}
+    novos_shopee = {}
+
+    for c in coletas:
+        for item in c.get("Mercado Livre", []):
+            cod = item["codigo"]
+            if cod not in ja_enviados and cod not in novos_ml:
+                novos_ml[cod] = item
+
+        for item in c.get("Shopee", []):
+            cod = item["codigo"]
+            if cod not in ja_enviados and cod not in novos_shopee:
+                novos_shopee[cod] = item
+
+    total_novos = len(novos_ml) + len(novos_shopee)
+
+    if total_novos == 0:
+        print(f"[{horario_envio}] Nenhum cupom novo encontrado. Nenhuma notificação enviada.")
+        return
+
+    print(f"[{horario_envio}] Encontrados {total_novos} novos cupons! Enviando...")
+
+    # Envia Mercado Livre (se houver) em tabela separada
+    if novos_ml:
+        tabela_ml = formatar_tabela_loja("Mercado Livre", "💛", list(novos_ml.values()))
+        msg_ml = (
+            "🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>\n\n"
+            f"{tabela_ml}\n"
             f"⏱️ <i>Verificado em: {horario_envio}</i>"
         )
-        enviar_telegram(chat_id, msg_sem_cupom)
+        enviar_mensagem_telegram(chat_id, msg_ml)
+        for cod in novos_ml:
+            ja_enviados.add(cod)
+
+    # Envia Shopee (se houver) em tabela separada
+    if novos_shopee:
+        tabela_shopee = formatar_tabela_loja("Shopee", "🧡", list(novos_shopee.values()))
+        msg_shopee = (
+            "🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>\n\n"
+            f"{tabela_shopee}\n"
+            f"⏱️ <i>Verificado em: {horario_envio}</i>"
+        )
+        enviar_mensagem_telegram(chat_id, msg_shopee)
+        for cod in novos_shopee:
+            ja_enviados.add(cod)
+
+    salvar_memoria(ja_enviados)
 
 
 if __name__ == "__main__":
