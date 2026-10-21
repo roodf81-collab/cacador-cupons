@@ -31,11 +31,12 @@ jobs:
       - name: Vasculhar Canais e Web
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python cupons.py
 
-      - name: Salvar histórico de cupons e ID
+      - name: Salvar histórico de cupons
         run: |
           git config user.name "Bot de Cupons"
           git config user.email "bot@github.com"
-          git add historico.txt meu_id.txt || true
+          git add historico.txt || true
           git diff --staged --quiet || (git commit -m "Atualiza memória de cupons" && git push --force-with-lease origin HEAD:main)

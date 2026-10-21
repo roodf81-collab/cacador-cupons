@@ -6,8 +6,11 @@ import requests
 from bs4 import BeautifulSoup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# Chat ID padrão se não for configurado no Secret (garante funcionamento mesmo sem Secret novo)
+DEFAULT_CHAT_ID = "742296380"
+
 ARQUIVO_MEMORIA = "historico.txt"
-ARQUIVO_ID = "meu_id.txt"
+DIAS_VALIDADE_HISTORICO = 14  # Cupons com mais de 14 dias são esquecidos para permitir repetições úteis
 
 # Canais públicos de promoções no Telegram
 CANAIS_TELEGRAM = [
@@ -31,8 +34,6 @@ PALAVRAS_IGNORAR = {
     "REGRAS", "TERMOS", "CONDICOES", "BOASCOMPRAS", "PARABENS",
 }
 
-# Regex estrito para identificar códigos reais
-# Exige que seja de 4 a 22 chars alfanuméricos e descarta se for apenas texto sem contexto
 PADRAO_CUPOM_TEXTO = re.compile(
     r"(?:cupom|c[oó]digo|use|aplique|c[oó]d|code|voucher)[:\s*`\"'\-👉]*([A-Z0-9_\-]{4,22})",
     re.IGNORECASE,
@@ -47,51 +48,63 @@ HEADERS = {
 
 
 def carregar_memoria():
+    """
+    Carrega cupons do histórico.
+    Formato suportado:
+      - Linha antiga: 'CODIGO'
+      - Linha nova: 'CODIGO|DATA_ISO' (para expiração de 14 dias)
+    """
     if not os.path.exists(ARQUIVO_MEMORIA):
-        return set()
+        return {}
+
+    memoria = {}
+    agora = datetime.now(timezone.utc)
+    limite_tempo = agora - timedelta(days=DIAS_VALIDADE_HISTORICO)
+
     with open(ARQUIVO_MEMORIA, "r", encoding="utf-8") as f:
-        return set(linha.strip().upper() for linha in f if linha.strip())
+        for linha in f:
+            linha = linha.strip()
+            if not linha:
+                continue
+
+            partes = linha.split("|")
+            codigo = partes[0].strip().upper()
+
+            if len(partes) > 1:
+                try:
+                    data_registro = datetime.fromisoformat(partes[1].strip())
+                    if data_registro.tzinfo is None:
+                        data_registro = data_registro.replace(tzinfo=timezone.utc)
+                    # Se for mais velho que o limite, não carrega (permite ser reencontrado no futuro)
+                    if data_registro < limite_tempo:
+                        continue
+                    memoria[codigo] = data_registro.isoformat()
+                except Exception:
+                    memoria[codigo] = agora.isoformat()
+            else:
+                memoria[codigo] = agora.isoformat()
+
+    return memoria
 
 
-def salvar_memoria(cupons):
-    # Mantém os últimos 1000 cupons
-    lista = list(cupons)[-1000:]
+def salvar_memoria(memoria_dict):
+    """Salva a memória com data de registro para manter rotatividade de cupons."""
+    # Mantém no máximo 1000 cupons recentes
+    itens = list(memoria_dict.items())[-1000:]
     with open(ARQUIVO_MEMORIA, "w", encoding="utf-8") as f:
-        for c in lista:
-            f.write(f"{c}\n")
+        for codigo, data_str in itens:
+            f.write(f"{codigo}|{data_str}\n")
 
 
 def obter_chat_id():
-    # 1. Tenta variável de ambiente se configurada nos Secrets
     chat_id = os.environ.get("CHAT_ID")
-    if chat_id:
+    if chat_id and str(chat_id).strip():
         return str(chat_id).strip()
-
-    # 2. Tenta arquivo local
-    if os.path.exists(ARQUIVO_ID):
-        with open(ARQUIVO_ID, "r", encoding="utf-8") as f:
-            cid = f.read().strip()
-            if cid:
-                return cid
-
-    # 3. Tenta via getUpdates do Telegram
-    if BOT_TOKEN:
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-            resp = requests.get(url, timeout=10).json()
-            mensagens = resp.get("result", [])
-            if mensagens:
-                cid = str(mensagens[-1]["message"]["chat"]["id"])
-                with open(ARQUIVO_ID, "w", encoding="utf-8") as f:
-                    f.write(cid)
-                return cid
-        except Exception as e:
-            print(f"Erro ao obter Chat ID via getUpdates: {e}")
-
-    return None
+    return DEFAULT_CHAT_ID
 
 
-def enviar_mensagem_telegram(chat_id, texto):
+def enviar_telegram(chat_id, texto, botoes=None, silencioso=False):
+    """Envia mensagem formatada com botões interativos e modo silencioso."""
     if not BOT_TOKEN or not chat_id:
         print("BOT_TOKEN ou CHAT_ID não definidos.")
         return False
@@ -102,15 +115,20 @@ def enviar_mensagem_telegram(chat_id, texto):
         "text": texto,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
+        "disable_notification": silencioso,
     }
+
+    if botoes:
+        payload["reply_markup"] = {"inline_keyboard": botoes}
+
     try:
         r = requests.post(url, json=payload, timeout=10)
         if not r.ok:
-            print(f"Erro ao enviar para Telegram: {r.status_code} - {r.text}")
+            print(f"Erro ao enviar Telegram: {r.status_code} - {r.text}")
             return False
         return True
     except Exception as e:
-        print(f"Exceção ao enviar Telegram: {e}")
+        print(f"Exceção no envio: {e}")
         return False
 
 
@@ -124,14 +142,12 @@ def e_cupom_valido(codigo):
         return False
     if codigo in PALAVRAS_IGNORAR:
         return False
-    # Evita links ou parâmetros URL acidentais
     if any(x in codigo for x in ["HTTP", "WWW", ".COM", ".BR", "/", "="]):
         return False
     return True
 
 
 def buscar_cupons_pelando():
-    """Busca cupons específicos com regras e limites no Pelando."""
     fontes = [
         ("Mercado Livre", "https://www.pelando.com.br/cupons-de-descontos/mercadolivre.com.br"),
         ("Shopee", "https://www.pelando.com.br/cupons-de-descontos/shopee.com.br"),
@@ -155,10 +171,8 @@ def buscar_cupons_pelando():
                     if not e_cupom_valido(codigo):
                         continue
 
-                    # Descrição/Título do desconto (ex: 'R$40 OFF acima de R$199')
                     title_el = item.find("h3") or item.find(class_="card__title")
                     detalhe = title_el.get_text(strip=True) if title_el else ""
-                    # Limpa prefixos redundantes
                     detalhe = re.sub(r"^\[.*?\]\s*", "", detalhe)
                     detalhe = re.sub(r"^Cupom\s+(Mercado\s+Livre|Shopee)\s*[-:]*\s*", "", detalhe, flags=re.IGNORECASE)
 
@@ -168,13 +182,12 @@ def buscar_cupons_pelando():
                         "origem": "Pelando",
                     })
         except Exception as e:
-            print(f"Erro ao buscar Pelando ({loja}): {e}")
+            print(f"Erro Pelando ({loja}): {e}")
 
     return resultados
 
 
 def buscar_cupons_cuponomia():
-    """Busca códigos no Cuponomia."""
     fontes = [
         ("Mercado Livre", "https://www.cuponomia.com.br/desconto/mercado-livre"),
         ("Shopee", "https://www.cuponomia.com.br/desconto/shopee"),
@@ -204,13 +217,12 @@ def buscar_cupons_cuponomia():
                     "origem": "Cuponomia",
                 })
         except Exception as e:
-            print(f"Erro ao buscar Cuponomia ({loja}): {e}")
+            print(f"Erro Cuponomia ({loja}): {e}")
 
     return resultados
 
 
 def buscar_cupons_meliuz():
-    """Busca códigos no Méliuz."""
     fontes = [
         ("Mercado Livre", "https://www.meliuz.com.br/desconto/mercado-livre"),
         ("Shopee", "https://www.meliuz.com.br/desconto/cupom-shopee"),
@@ -239,13 +251,12 @@ def buscar_cupons_meliuz():
                     "origem": "Méliuz",
                 })
         except Exception as e:
-            print(f"Erro ao buscar Méliuz ({loja}): {e}")
+            print(f"Erro Méliuz ({loja}): {e}")
 
     return resultados
 
 
 def buscar_cupons_telegram():
-    """Vasculha canais públicos de promoções procurando estritamente cupons ML e Shopee."""
     resultados = {"Mercado Livre": [], "Shopee": []}
 
     for canal in CANAIS_TELEGRAM:
@@ -260,7 +271,6 @@ def buscar_cupons_telegram():
                 texto = post.get_text(separator=" ")
                 texto_min = texto.lower()
 
-                # Identifica se refere-se a Shopee ou Mercado Livre
                 loja = None
                 if any(k in texto_min for k in ["shopee", "shp.ee", "s.shopee"]):
                     loja = "Shopee"
@@ -270,13 +280,11 @@ def buscar_cupons_telegram():
                 if not loja:
                     continue
 
-                # Procura padrões de cupom no texto
                 for match in PADRAO_CUPOM_TEXTO.finditer(texto):
                     codigo = match.group(1).upper()
                     if not e_cupom_valido(codigo):
                         continue
 
-                    # Pega primeira frase limpa para servir de contexto do desconto
                     linhas = [l.strip() for l in texto.split("\n") if l.strip()]
                     descricao = ""
                     for l in linhas:
@@ -290,16 +298,12 @@ def buscar_cupons_telegram():
                         "origem": f"Telegram (@{canal})",
                     })
         except Exception as e:
-            print(f"Erro no canal @{canal}: {e}")
+            print(f"Erro canal @{canal}: {e}")
 
     return resultados
 
 
 def formatar_tabela_loja(nome_loja, emoji_loja, cupons):
-    """
-    Formata os cupons em estilo de tabela limpa.
-    O código fica em <code>CUPOM</code> para copiar com 1 toque no celular.
-    """
     if not cupons:
         return ""
 
@@ -320,7 +324,6 @@ def formatar_tabela_loja(nome_loja, emoji_loja, cupons):
             linhas.append(f"│ 📌 Fonte: {origem}")
         linhas.append("├────────────────────────────────")
 
-    # Substitui a última linha separadora pelo fechamento da caixa
     linhas[-1] = "└────────────────────────────────"
     return "\n".join(linhas)
 
@@ -328,14 +331,17 @@ def formatar_tabela_loja(nome_loja, emoji_loja, cupons):
 def executar_varredura():
     chat_id = obter_chat_id()
     if not chat_id:
-        print("Chat ID não encontrado. O bot não pode enviar mensagens.")
+        print("Chat ID não encontrado.")
         return
 
-    ja_enviados = carregar_memoria()
+    memoria_cupons = carregar_memoria()
     fuso_brasil = timezone(timedelta(hours=-3))
-    horario_envio = datetime.now(fuso_brasil).strftime("%d/%m/%Y às %H:%M")
+    agora_br = datetime.now(fuso_brasil)
+    horario_envio = agora_br.strftime("%d/%m/%Y às %H:%M")
 
-    # Coleta de todas as fontes
+    # Modo silencioso entre 23:00 e 07:00 (não vibra/não acorda de madrugada)
+    eh_madrugada = agora_br.hour >= 23 or agora_br.hour < 7
+
     coletas = [
         buscar_cupons_pelando(),
         buscar_cupons_cuponomia(),
@@ -349,47 +355,67 @@ def executar_varredura():
     for c in coletas:
         for item in c.get("Mercado Livre", []):
             cod = item["codigo"]
-            if cod not in ja_enviados and cod not in novos_ml:
+            if cod not in memoria_cupons and cod not in novos_ml:
                 novos_ml[cod] = item
 
         for item in c.get("Shopee", []):
             cod = item["codigo"]
-            if cod not in ja_enviados and cod not in novos_shopee:
+            if cod not in memoria_cupons and cod not in novos_shopee:
                 novos_shopee[cod] = item
 
     total_novos = len(novos_ml) + len(novos_shopee)
 
     if total_novos == 0:
-        print(f"[{horario_envio}] Nenhum cupom novo encontrado. Nenhuma notificação enviada.")
+        print(f"[{horario_envio}] Nenhum cupom novo. Silêncio mantido.")
+        salvar_memoria(memoria_cupons)
         return
 
     print(f"[{horario_envio}] Encontrados {total_novos} novos cupons! Enviando...")
+    agora_iso = datetime.now(timezone.utc).isoformat()
 
-    # Envia Mercado Livre (se houver) em tabela separada
+    # Envio Mercado Livre com botão direto para a loja
     if novos_ml:
         tabela_ml = formatar_tabela_loja("Mercado Livre", "💛", list(novos_ml.values()))
+        aviso_noturno = " 🌙 <i>(Silencioso da madrugada)</i>" if eh_madrugada else ""
         msg_ml = (
-            "🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>\n\n"
+            f"🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>{aviso_noturno}\n\n"
             f"{tabela_ml}\n"
             f"⏱️ <i>Verificado em: {horario_envio}</i>"
         )
-        enviar_mensagem_telegram(chat_id, msg_ml)
+        botoes_ml = [
+            [
+                {
+                    "text": "🛍️ Abrir Mercado Livre (App/Web)",
+                    "url": "https://www.mercadolivre.com.br/cupons",
+                }
+            ]
+        ]
+        enviar_telegram(chat_id, msg_ml, botoes=botoes_ml, silencioso=eh_madrugada)
         for cod in novos_ml:
-            ja_enviados.add(cod)
+            memoria_cupons[cod] = agora_iso
 
-    # Envia Shopee (se houver) em tabela separada
+    # Envio Shopee com botão direto para a página de cupons
     if novos_shopee:
         tabela_shopee = formatar_tabela_loja("Shopee", "🧡", list(novos_shopee.values()))
+        aviso_noturno = " 🌙 <i>(Silencioso da madrugada)</i>" if eh_madrugada else ""
         msg_shopee = (
-            "🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>\n\n"
+            f"🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>{aviso_noturno}\n\n"
             f"{tabela_shopee}\n"
             f"⏱️ <i>Verificado em: {horario_envio}</i>"
         )
-        enviar_mensagem_telegram(chat_id, msg_shopee)
+        botoes_shopee = [
+            [
+                {
+                    "text": "🛍️ Abrir Shopee (Cupons)",
+                    "url": "https://shopee.com.br/m/cupons-diarios",
+                }
+            ]
+        ]
+        enviar_telegram(chat_id, msg_shopee, botoes=botoes_shopee, silencioso=eh_madrugada)
         for cod in novos_shopee:
-            ja_enviados.add(cod)
+            memoria_cupons[cod] = agora_iso
 
-    salvar_memoria(ja_enviados)
+    salvar_memoria(memoria_cupons)
 
 
 if __name__ == "__main__":
