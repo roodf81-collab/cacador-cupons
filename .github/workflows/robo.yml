@@ -1,0 +1,37 @@
+name: Caçador de Cupons
+
+on:
+  schedule:
+    - cron: '*/20 * * * *' # Roda automaticamente a cada 20 minutos
+  workflow_dispatch:       # Permite clicar em um botão para testar na hora
+
+permissions:
+  contents: write          # Permissão para salvar o historico.txt de cupons já enviados
+
+jobs:
+  buscar-cupons:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar código e histórico
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar bibliotecas
+        run: pip install requests beautifulsoup4
+
+      - name: Vasculhar Canais e Web
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: python cupons.py
+
+      - name: Salvar histórico de cupons para não repetir
+        run: |
+          git config user.name "Bot de Cupons"
+          git config user.email "bot@github.com"
+          git add historico.txt || true
+          git diff --staged --quiet || git commit -m "Atualiza memória de cupons"
+          git push
