@@ -367,7 +367,16 @@ def executar_varredura():
     total_novos = len(novos_ml) + len(novos_shopee)
 
     if total_novos == 0:
-        print(f"[{horario_envio}] Nenhum cupom novo. Silêncio mantido.")
+        print(f"[{horario_envio}] Nenhum cupom novo encontrado.")
+        msg_sem_cupom = (
+            "🔍 <b>STATUS: VARREDURA CONCLUÍDA</b>\n"
+            "────────────────────────────────\n"
+            "Fiz a busca nos canais e sites parceiros, mas <b>não há cupons novos</b> da Shopee ou Mercado Livre neste momento.\n"
+            "────────────────────────────────\n"
+            f"⏱️ <i>Verificado em: {horario_envio}</i>"
+        )
+        # Se for madrugada (23h-7h), manda silencioso para não acordar
+        enviar_telegram(chat_id, msg_sem_cupom, silencioso=eh_madrugada)
         salvar_memoria(memoria_cupons)
         return
 
