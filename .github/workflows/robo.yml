@@ -2,11 +2,11 @@ name: Caçador de Cupons
 
 on:
   schedule:
-    - cron: '*/20 * * * *' # Roda automaticamente a cada 20 minutos
-  workflow_dispatch:       # Permite clicar em um botão para testar na hora
+    - cron: '*/20 * * * *'
+  workflow_dispatch:
 
 permissions:
-  contents: write          # Permissão para salvar o historico.txt de cupons já enviados
+  contents: write
 
 jobs:
   buscar-cupons:
@@ -28,10 +28,10 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: python cupons.py
 
-      - name: Salvar histórico de cupons para não repetir
+      - name: Salvar histórico de cupons e ID
         run: |
           git config user.name "Bot de Cupons"
           git config user.email "bot@github.com"
-         git add historico.txt meu_id.txt || true
+          git add historico.txt meu_id.txt || true
           git diff --staged --quiet || git commit -m "Atualiza memória de cupons"
           git push
