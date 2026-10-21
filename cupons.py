@@ -14,6 +14,7 @@ DIAS_VALIDADE_HISTORICO = 14  # Cupons com mais de 14 dias são esquecidos para 
 
 # Canais públicos de promoções no Telegram
 CANAIS_TELEGRAM = [
+    "CuponsTecnan",
     "pechinchou",
     "canaltechofertas",
     "canalpromocoes",
