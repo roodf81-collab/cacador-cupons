@@ -5,6 +5,10 @@ on:
     - cron: '*/20 * * * *'
   workflow_dispatch:
 
+concurrency:
+  group: cacador-cupons-group
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -34,4 +38,5 @@ jobs:
           git config user.email "bot@github.com"
           git add historico.txt meu_id.txt || true
           git diff --staged --quiet || git commit -m "Atualiza memória de cupons"
+          git pull --rebase --autostash origin main
           git push
