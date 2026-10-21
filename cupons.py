@@ -107,6 +107,17 @@ def executar_varredura():
     if not chat_id:
         return
 
+    # LINHA DE TESTE (pode remover depois)
+    enviar_telegram(
+        chat_id,
+        "🛒 <b>TESTE MANUAL DO BOT</b>\n──────────────────\n🎟️ <b>Cupom:</b> <code>TESTEAGORA</code>\n⏱️ <i>A funcionar a 100%!</i>",
+    )
+
+    
+    chat_id = obter_meu_contato()
+    if not chat_id:
+        return
+
     ja_enviados = carregar_memoria()
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
