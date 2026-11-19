@@ -25,6 +25,7 @@ CONFIG_PADRAO = {
         "radarcupons",
     ],
     "ultimo_update_id": 0,
+    "canal_cupons_id": None,
 }
 
 INFO_LOJAS = {
@@ -239,6 +240,33 @@ def processar_comandos_telegram(chat_id, config):
         if up_id > ultimo_id:
             ultimo_id = up_id
 
+        # Detecção automática do Canal de Cupons (quando bot vira admin ou quando há post no canal)
+        mcm = u.get("my_chat_member")
+        if mcm and mcm.get("chat", {}).get("type") == "channel":
+            cid = mcm["chat"]["id"]
+            title = mcm["chat"].get("title", "Canal de Cupons")
+            if config.get("canal_cupons_id") != cid:
+                config["canal_cupons_id"] = cid
+                enviar_telegram(
+                    chat_id,
+                    f"🎉 <b>Canal vinculado com sucesso!</b>\n"
+                    f"A partir de agora, os cupons serão enviados para o canal <b>{title}</b>.\n\n"
+                    f"Sua conversa privada aqui fica 100% limpa e exclusiva para configurações!"
+                )
+
+        cp = u.get("channel_post")
+        if cp and cp.get("chat", {}).get("type") == "channel":
+            cid = cp["chat"]["id"]
+            title = cp["chat"].get("title", "Canal de Cupons")
+            if config.get("canal_cupons_id") != cid:
+                config["canal_cupons_id"] = cid
+                enviar_telegram(
+                    chat_id,
+                    f"🎉 <b>Canal vinculado com sucesso!</b>\n"
+                    f"A partir de agora, os cupons serão enviados para o canal <b>{title}</b>.\n\n"
+                    f"Sua conversa privada aqui fica 100% limpa e exclusiva para configurações!"
+                )
+
         msg = u.get("message") or u.get("edited_message")
         if not msg:
             continue
@@ -307,13 +335,16 @@ def processar_comandos_telegram(chat_id, config):
                     lojas_msg.append(f"• {emoji} <b>{loja}:</b> ❌ DESATIVADO")
 
             canais_msg = [f"• @{c}" for c in config["canais_ativos"]]
+            canal_destino = config.get("canal_cupons_id")
+            destino_str = f"Canal ID {canal_destino} ✅" if canal_destino else "Conversa Privada (ainda não vinculado)"
             status_txt = (
                 "⚙️ <b>CONFIGURAÇÃO ATUAL DO BOT</b>\n"
                 "────────────────────────────────\n"
+                f"📢 <b>Destino dos Cupons:</b> {destino_str}\n\n"
                 "🏬 <b>Lojas Monitoradas:</b>\n"
                 + "\n".join(lojas_msg)
                 + "\n\n"
-                + f"📢 <b>Canais Monitorados ({len(config['canais_ativos'])}):</b>\n"
+                + f"📡 <b>Fontes Monitoradas ({len(config['canais_ativos'])}):</b>\n"
                 + "\n".join(canais_msg)
                 + "\n────────────────────────────────\n"
                 "<i>Digite /menu para alterar opções</i>"
@@ -683,12 +714,14 @@ def executar_varredura():
             "────────────────────────────────\n"
             f"⏱️ <i>Verificado em: {horario_envio}</i>"
         )
-        enviar_telegram(chat_id, msg_sem_cupom)
+        destino_cupons = config.get("canal_cupons_id") or chat_id
+        enviar_telegram(destino_cupons, msg_sem_cupom)
         salvar_memoria(memoria_cupons)
         return
 
     print(f"[{horario_envio}] Encontrados {total_novos} novos cupons! Enviando...")
     agora_iso = datetime.now(timezone.utc).isoformat()
+    destino_cupons = config.get("canal_cupons_id") or chat_id
 
     for loja in lojas_ativas:
         itens_loja = list(novos_por_loja[loja].values())
@@ -711,7 +744,7 @@ def executar_varredura():
         if url_btn:
             botoes = [[{"text": txt_btn, "url": url_btn}]]
 
-        enviar_telegram(chat_id, msg, botoes=botoes)
+        enviar_telegram(destino_cupons, msg, botoes=botoes)
 
         for cod in novos_por_loja[loja]:
             memoria_cupons[cod] = agora_iso
