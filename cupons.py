@@ -297,7 +297,7 @@ def processar_comandos_telegram(chat_id, config):
             )
             enviar_telegram(chat_id, menu)
 
-        elif cmd_puro in ["status", "config"]:
+        elif cmd_puro in ["status", "satus", "staus", "config"]:
             lojas_msg = []
             for loja in INFO_LOJAS.keys():
                 emoji = INFO_LOJAS[loja]["emoji"]
@@ -413,6 +413,9 @@ def processar_comandos_telegram(chat_id, config):
 
         elif cmd_puro in ["buscar", "varrer"]:
             enviar_telegram(chat_id, "🔍 <i>Processando varredura com as configurações atuais...</i>")
+
+        else:
+            enviar_telegram(chat_id, "❓ Comando não reconhecido. Digite <code>/menu</code> para ver as opções disponíveis.")
 
     config["ultimo_update_id"] = ultimo_id
     salvar_config(config)
