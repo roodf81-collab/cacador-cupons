@@ -1,0 +1,15 @@
+{
+  "lojas_ativas": [
+    "Mercado Livre",
+    "Shopee"
+  ],
+  "canais_ativos": [
+    "CuponsTecnan",
+    "pechinchou",
+    "canaltechofertas",
+    "canalpromocoes",
+    "achadinhosdashopee",
+    "radarcupons"
+  ],
+  "ultimo_update_id": 0
+}
