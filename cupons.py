@@ -13,6 +13,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
+import time
 import requests
 from bs4 import BeautifulSoup
 
@@ -704,6 +705,12 @@ def formatar_tabela_loja(nome_loja, emoji_loja, cupons):
 
 
 def executar_varredura(ignorar_horario=False, chat_resposta=None):
+    try:
+        _executar_varredura_interna(ignorar_horario, chat_resposta)
+    except Exception as e:
+        registrar_log(f"❌ Exceção na varredura de cupons: {e}")
+
+def _executar_varredura_interna(ignorar_horario=False, chat_resposta=None):
     chat_id = obter_chat_id()
     if not chat_id:
         print("Chat ID não encontrado.")
