@@ -1,3 +1,13 @@
+LOGGER_CALLBACK = None
+
+def registrar_log(msg):
+    print(msg)
+    if LOGGER_CALLBACK:
+        try:
+            LOGGER_CALLBACK(msg)
+        except Exception:
+            pass
+
 import html
 import json
 import os
@@ -171,7 +181,36 @@ def obter_chat_id():
 def enviar_telegram(chat_id, texto, botoes=None, silencioso=False):
     """Envia mensagem formatada com botões interativos e modo silencioso."""
     if not BOT_TOKEN or not chat_id:
-        print("BOT_TOKEN ou CHAT_ID não definidos.")
+        registrar_log(f"❌ BOT_TOKEN ou CHAT_ID ({chat_id}) não definidos.")
+        return False
+
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": texto,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+        "disable_notification": silencioso,
+    }
+
+    if botoes:
+        payload["reply_markup"] = {"inline_keyboard": botoes}
+
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if not r.ok:
+            if "parse_mode" in payload:
+                payload.pop("parse_mode", None)
+                r_fallback = requests.post(url, json=payload, timeout=10)
+                if r_fallback.ok:
+                    registrar_log(f"✅ Telegram envio OK (fallback texto puro) para {chat_id}")
+                    return True
+            registrar_log(f"❌ Erro ao enviar Telegram para {chat_id}: {r.status_code} - {r.text}")
+            return False
+        registrar_log(f"✅ Telegram envio OK para {chat_id}")
+        return True
+    except Exception as e:
+        registrar_log(f"❌ Exceção ao enviar Telegram para {chat_id}: {e}")
         return False
 
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -670,10 +709,8 @@ def executar_varredura(ignorar_horario=False, chat_resposta=None):
         print("Chat ID não encontrado.")
         return
 
-    # 1. Carrega configurações e processa comandos enviados pelo Telegram no celular
+    # 1. Carrega configurações atuais
     config = carregar_config()
-    processar_comandos_telegram(chat_id, config)
-    salvar_config(config)
 
     lojas_ativas = config.get("lojas_ativas", ["Mercado Livre", "Shopee"])
     canais_ativos = config.get("canais_ativos", [])
@@ -711,22 +748,29 @@ def executar_varredura(ignorar_horario=False, chat_resposta=None):
 
     total_novos = sum(len(itens) for itens in novos_por_loja.values())
 
+    destino_cupons = config.get("canal_cupons_id") or chat_id
+
     if total_novos == 0:
-        print(f"[{horario_envio}] Nenhum cupom novo encontrado.")
-        if chat_resposta:
-            lojas_str = ", ".join(lojas_ativas)
-            msg_sem_cupom = (
-                "🔍 <b>Varredura concluída!</b>\n"
-                f"Fiz a busca agora mesmo, mas <b>não há cupons novos</b> de {lojas_str} neste momento.\n\n"
-                f"<i>Todos os cupons válidos anteriores continuam disponíveis no canal.</i>"
+        registrar_log(f"[{horario_envio}] Nenhum cupom novo encontrado para {lojas_ativas}")
+        lojas_str = ", ".join(lojas_ativas)
+        msg_sem_cupom = (
+            "🔍 <b>STATUS: VARREDURA CONCLUÍDA</b>\n"
+            "────────────────────────────────\n"
+            f"Fiz a busca nos canais e parceiros, mas <b>não há cupons novos</b> de {lojas_str} neste momento.\n"
+            "────────────────────────────────\n"
+            f"⏱️ <i>Verificado em: {horario_envio}</i>"
+        )
+        enviar_telegram(destino_cupons, msg_sem_cupom)
+        if chat_resposta and str(chat_resposta) != str(destino_cupons):
+            enviar_telegram(
+                chat_resposta,
+                f"🔍 <b>Varredura concluída!</b>\nNão há cupons novos de <b>{lojas_str}</b> neste momento. Relatório postado no canal!"
             )
-            enviar_telegram(chat_resposta, msg_sem_cupom)
         salvar_memoria(memoria_cupons)
         return
 
-    print(f"[{horario_envio}] Encontrados {total_novos} novos cupons! Enviando...")
+    registrar_log(f"[{horario_envio}] Encontrados {total_novos} novos cupons! Enviando para {destino_cupons}...")
     agora_iso = datetime.now(timezone.utc).isoformat()
-    destino_cupons = config.get("canal_cupons_id") or chat_id
 
     for loja in lojas_ativas:
         itens_loja = list(novos_por_loja[loja].values())
@@ -749,14 +793,16 @@ def executar_varredura(ignorar_horario=False, chat_resposta=None):
         if url_btn:
             botoes = [[{"text": txt_btn, "url": url_btn}]]
 
-        enviar_telegram(destino_cupons, msg, botoes=botoes)
-
-        for cod in novos_por_loja[loja]:
-            memoria_cupons[cod] = agora_iso
+        sucesso = enviar_telegram(destino_cupons, msg, botoes=botoes)
+        if sucesso:
+            for cod in novos_por_loja[loja]:
+                memoria_cupons[cod] = agora_iso
+        else:
+            registrar_log(f"⚠️ Falha no envio de cupons de {loja} para {destino_cupons}. Cupons preservados para nova tentativa.")
 
     salvar_memoria(memoria_cupons)
 
-    if chat_resposta:
+    if chat_resposta and str(chat_resposta) != str(destino_cupons):
         enviar_telegram(
             chat_resposta,
             f"🎉 <b>Varredura concluída!</b>\n"

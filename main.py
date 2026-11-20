@@ -25,6 +25,9 @@ def registrar_log(msg):
     LOGS_RECENTES.append(linha)
 
 
+cupons.LOGGER_CALLBACK = registrar_log
+
+
 def rank_modelo(m):
     m_lower = m.lower()
     if "gpt-oss-120b" in m_lower:
@@ -103,6 +106,41 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             or os.environ.get("GROQ_TOKEN")
         )
 
+        if self.path == "/test-canal":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.end_headers()
+            cfg = cupons.carregar_config()
+            cid = cfg.get("canal_cupons_id")
+            token = cupons.BOT_TOKEN
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload = {
+                "chat_id": cid,
+                "text": "🧪 <b>Teste de conexão no canal Meus Cupons!</b>\nSe você está lendo isso, o bot tem permissão de postar aqui com sucesso! ✅",
+                "parse_mode": "HTML",
+            }
+            try:
+                r = requests.post(url, json=payload, timeout=10)
+                self.wfile.write(
+                    json.dumps(
+                        {"canal_id": cid, "status_code": r.status_code, "resposta_telegram": r.json() if r.ok else r.text},
+                        ensure_ascii=False,
+                        indent=2,
+                    ).encode("utf-8")
+                )
+            except Exception as e:
+                self.wfile.write(json.dumps({"canal_id": cid, "erro": str(e)}).encode("utf-8"))
+            return
+
+        if self.path == "/limpar-memoria":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.end_headers()
+            cupons.salvar_memoria({})
+            registrar_log("🧹 Memória de cupons limpa via endpoint /limpar-memoria")
+            self.wfile.write(b'{"status": "Memoria de cupons limpa com sucesso!"}')
+            return
+
         if self.path == "/test-ia":
             self.send_response(200)
             self.send_header("Content-type", "application/json; charset=utf-8")
@@ -154,7 +192,9 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             "provedor_ia": nome_modelo,
             "variaveis_detectadas": chaves_relevantes,
             "bot_token_conectado": bool(cupons.BOT_TOKEN),
+            "canal_cupons_id": cupons.carregar_config().get("canal_cupons_id"),
             "lojas_ativas": cupons.carregar_config().get("lojas_ativas", []),
+            "canais_ativos": cupons.carregar_config().get("canais_ativos", []),
             "ultimos_logs": list(LOGS_RECENTES),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -297,6 +337,9 @@ def executar_acoes_ia(texto, config, target_chat_id=None):
 
         elif comando == "ADICIONAR_CANAL":
             canal_limpo = param.replace("@", "").replace("https://t.me/", "").replace("http://t.me/", "").strip("/ ")
+            if canal_limpo.lower() in ["meus cupons", "meuscupons"]:
+                registrar_log(f"Ação ignorada: '{canal_limpo}' é o canal de destino, não fonte de busca.")
+                continue
             if canal_limpo and canal_limpo not in config.get("canais_ativos", []):
                 config.setdefault("canais_ativos", []).append(canal_limpo)
                 modificou_config = True
