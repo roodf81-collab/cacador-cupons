@@ -24,11 +24,16 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "application/json; charset=utf-8")
         self.end_headers()
+        tem_groq = bool(os.environ.get("GROQ_API_KEY"))
+        tem_gemini = bool(os.environ.get("GEMINI_API_KEY"))
+        provedor = "Groq (Llama 3)" if tem_groq else ("Gemini" if tem_gemini else "Nenhum")
+
         resposta = {
             "status": "online",
             "bot": "BOT_ROD",
             "modo": "24h Tempo Real",
-            "gemini_conectado": bool(os.environ.get("GEMINI_API_KEY")),
+            "ia_conectada": tem_groq or tem_gemini,
+            "provedor_ia": provedor,
             "bot_token_conectado": bool(cupons.BOT_TOKEN),
             "lojas_ativas": cupons.carregar_config().get("lojas_ativas", []),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -64,57 +69,84 @@ def enviar_digitando(chat_id):
         pass
 
 
-def consultar_gemini(pergunta, config):
-    """Consulta a IA do Gemini para responder dúvidas de cupons e compras."""
-    api_key = os.environ.get("GEMINI_API_KEY") or GEMINI_API_KEY
-    if not api_key:
+def consultar_ia(pergunta, config):
+    """Consulta a IA (Groq com Llama 3 ou Gemini) para responder dúvidas de cupons e compras."""
+    groq_key = os.environ.get("GROQ_API_KEY")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+
+    if not groq_key and not gemini_key:
         return (
             "🤖 <b>Olá, Rodrigo!</b>\n\n"
-            "Meu cérebro de Inteligência Artificial ainda não foi conectado. "
-            "Para conversar comigo sobre compras, lojas e cupons, basta adicionar a chave "
-            "<code>GEMINI_API_KEY</code> no painel do Render!\n\n"
-            "<i>Para ver os comandos de controle disponíveis, digite /menu.</i>"
+            "Meu cérebro de Inteligência Artificial ainda não foi conectado.\n"
+            "Basta adicionar a chave <code>GROQ_API_KEY</code> no painel do Render para começarmos a conversar!\n\n"
+            "<i>Para ver os comandos de controle, digite /menu.</i>"
         )
 
     lojas_ativas = ", ".join(config.get("lojas_ativas", []))
-    headers = {"Content-Type": "application/json"}
-
     prompt_sistema = (
         "Você é o assistente inteligente do BOT_ROD, especialista em cupons de desconto, "
         "compras inteligentes e e-commerce brasileiro (Mercado Livre, Shopee, AliExpress, Amazon). "
-        "Você conversa com o Rodrigo. "
+        "Você foi desenvolvido para ajudar o Rodrigo nas compras dele. "
         f"Atualmente, as lojas ativas no bot dele são: {lojas_ativas}. "
         "Responda às perguntas dele de forma direta, prestativa, amigável e realista sobre preços, "
         "regras de cupons, melhores épocas para comprar e dicas de economia. "
-        "Use texto limpo sem formatações complexas."
+        "Use formatação simples para Telegram (como <b>negrito</b> ou <i>itálico</i>). "
+        "Não use asteriscos duplos (**), use tags HTML <b>palavra</b> para negrito."
     )
 
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": pergunta}]}],
-        "systemInstruction": {"parts": [{"text": prompt_sistema}]},
-    }
+    # 1. Preferência principal: GROQ (Ultra rápido, gratuito e sem cartão)
+    if groq_key:
+        url_groq = "https://api.groq.com/openai/v1/chat/completions"
+        headers_groq = {
+            "Authorization": f"Bearer {groq_key.strip()}",
+            "Content-Type": "application/json",
+        }
+        for modelo in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+            payload_groq = {
+                "model": modelo,
+                "messages": [
+                    {"role": "system", "content": prompt_sistema},
+                    {"role": "user", "content": pergunta},
+                ],
+                "temperature": 0.7,
+                "max_tokens": 800,
+            }
+            try:
+                resp = requests.post(url_groq, headers=headers_groq, json=payload_groq, timeout=20)
+                if resp.status_code == 200:
+                    dados = resp.json()
+                    texto = dados["choices"][0]["message"]["content"].strip()
+                    texto = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto)
+                    return texto
+                else:
+                    print(f"Groq {modelo} status {resp.status_code}: {resp.text[:120]}")
+            except Exception as e:
+                print(f"Erro ao chamar Groq {modelo}: {e}")
 
-    # Tenta modelos disponíveis (gemini-1.5-flash ou gemini-2.0-flash ou gemini-1.5-pro)
-    modelos = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
-    for mod in modelos:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=25)
-            if resp.status_code == 200:
-                dados = resp.json()
-                cands = dados.get("candidates", [])
-                if cands:
-                    partes = cands[0].get("content", {}).get("parts", [])
-                    if partes:
-                        texto_resposta = partes[0].get("text", "").strip()
-                        texto_resposta = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto_resposta)
-                        return texto_resposta
-            else:
-                print(f"Gemini {mod} retornou status {resp.status_code}: {resp.text[:150]}")
-        except Exception as e:
-            print(f"Erro ao chamar Gemini {mod}: {e}")
+    # 2. Alternativa: GEMINI
+    if gemini_key:
+        headers_gemini = {"Content-Type": "application/json"}
+        payload_gemini = {
+            "contents": [{"role": "user", "parts": [{"text": pergunta}]}],
+            "systemInstruction": {"parts": [{"text": prompt_sistema}]},
+        }
+        for mod in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+            url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={gemini_key.strip()}"
+            try:
+                resp = requests.post(url_gemini, headers=headers_gemini, json=payload_gemini, timeout=20)
+                if resp.status_code == 200:
+                    dados = resp.json()
+                    cands = dados.get("candidates", [])
+                    if cands:
+                        partes = cands[0].get("content", {}).get("parts", [])
+                        if partes:
+                            texto_resposta = partes[0].get("text", "").strip()
+                            texto_resposta = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto_resposta)
+                            return texto_resposta
+            except Exception as e:
+                print(f"Erro ao chamar Gemini {mod}: {e}")
 
-    return "⚠️ Ops, tive uma instabilidade temporária ao consultar o cérebro da IA. Tente perguntar novamente!"
+    return "⚠️ Ops, tive uma instabilidade temporária ao consultar a IA. Tente perguntar novamente em alguns instantes!"
 
 
 def processar_update_ao_vivo(u, chat_id, config):
@@ -329,7 +361,7 @@ def processar_update_ao_vivo(u, chat_id, config):
     else:
         # Se não for comando com barra, o Gemini responde como assistente pessoal com IA!
         enviar_digitando(chat_id)
-        resposta_ia = consultar_gemini(texto, config)
+        resposta_ia = consultar_ia(texto, config)
         cupons.enviar_telegram(chat_id, resposta_ia)
 
 
