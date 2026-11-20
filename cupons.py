@@ -782,23 +782,33 @@ def executar_varredura(ignorar_horario=False, chat_resposta=None):
         url_btn = info.get("url_botao")
         txt_btn = info.get("texto_botao", f"🛍️ Abrir {loja}")
 
-        tabela = formatar_tabela_loja(loja, emoji, itens_loja)
-        msg = (
-            "🏷️ <b>NOVOS CUPONS DISPONÍVEIS</b>\n\n"
-            f"{tabela}\n"
-            f"⏱️ <i>Verificado em: {horario_envio}</i>"
-        )
+        # Envia em lotes de no máximo 10 cupons para nunca exceder o limite de 4096 caracteres do Telegram
+        TAMANHO_LOTE = 10
+        total_lotes = (len(itens_loja) + TAMANHO_LOTE - 1) // TAMANHO_LOTE
 
-        botoes = None
-        if url_btn:
-            botoes = [[{"text": txt_btn, "url": url_btn}]]
+        for idx in range(0, len(itens_loja), TAMANHO_LOTE):
+            lote = itens_loja[idx:idx + TAMANHO_LOTE]
+            num_lote = idx // TAMANHO_LOTE + 1
+            parte_str = f" ({num_lote}/{total_lotes})" if total_lotes > 1 else ""
 
-        sucesso = enviar_telegram(destino_cupons, msg, botoes=botoes)
-        if sucesso:
-            for cod in novos_por_loja[loja]:
-                memoria_cupons[cod] = agora_iso
-        else:
-            registrar_log(f"⚠️ Falha no envio de cupons de {loja} para {destino_cupons}. Cupons preservados para nova tentativa.")
+            tabela = formatar_tabela_loja(f"{loja}{parte_str}", emoji, lote)
+            msg = (
+                f"🏷️ <b>NOVOS CUPONS DISPONÍVEIS{parte_str.upper()}</b>\n\n"
+                f"{tabela}\n"
+                f"⏱️ <i>Verificado em: {horario_envio}</i>"
+            )
+
+            botoes = [[{"text": txt_btn, "url": url_btn}]] if url_btn else None
+
+            sucesso = enviar_telegram(destino_cupons, msg, botoes=botoes)
+            if sucesso:
+                for item in lote:
+                    memoria_cupons[item["codigo"]] = agora_iso
+            else:
+                registrar_log(f"⚠️ Falha no envio do lote {num_lote} de {loja} para {destino_cupons}.")
+
+            # Pequena pausa para respeitar o rate-limit do Telegram
+            time.sleep(0.5)
 
     salvar_memoria(memoria_cupons)
 
