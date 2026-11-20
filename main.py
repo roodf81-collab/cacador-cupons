@@ -193,6 +193,117 @@ def formatar_para_telegram(texto):
     return texto
 
 
+def tentar_executar_comando_rapido(texto, config):
+    """Execução instantânea (sub-segundo) para frases comuns de comando em linguagem natural."""
+    texto_lower = texto.lower().strip()
+
+    # 1. Ativação direta: "ativa amazon", "ativar a shopee", "adiciona mercado livre"
+    m_ativar = re.search(
+        r"^(?:por\s+favor\s+)?(?:ativ(?:a|e|ar)?|habilite?|habilitar|coloque?|colocar|adicion(?:a|e|ar)?)\s+(?:a|o)?\s*(shopee|ml|mercado\s*livre|amazon|aliexpress|ali)\b",
+        texto_lower,
+    )
+    if m_ativar:
+        loja = cupons.normalizar_nome_loja(m_ativar.group(1))
+        if loja:
+            if loja not in config.get("lojas_ativas", []):
+                config.setdefault("lojas_ativas", []).append(loja)
+                cupons.salvar_config(config)
+                registrar_log(f"Comando rápido: Loja {loja} ativada")
+                return f"✅ <b>Pronto!</b> A loja <b>{loja}</b> foi <b>ATIVADA</b> nas buscas em tempo real!"
+            return f"ℹ️ A loja <b>{loja}</b> já está ativa nas buscas."
+
+    # 2. Desativação direta: "desativa shopee", "desativar mercado livre", "tira a amazon"
+    m_desativar = re.search(
+        r"^(?:por\s+favor\s+)?(?:desativ(?:a|e|ar)?|desabilite?|desabilitar|remov(?:a|e|er)?|tir(?:a|e|ar)?)\s+(?:a|o)?\s*(shopee|ml|mercado\s*livre|amazon|aliexpress|ali)\b",
+        texto_lower,
+    )
+    if m_desativar:
+        loja = cupons.normalizar_nome_loja(m_desativar.group(1))
+        if loja:
+            if loja in config.get("lojas_ativas", []):
+                config["lojas_ativas"].remove(loja)
+                cupons.salvar_config(config)
+                registrar_log(f"Comando rápido: Loja {loja} desativada")
+                return f"🛑 <b>Feito!</b> A loja <b>{loja}</b> foi <b>DESATIVADA</b> das buscas."
+            return f"ℹ️ A loja <b>{loja}</b> já não estava ativa."
+
+    # 3. Busca imediata: "busca cupons agora", "faz uma varredura", "procurar cupons"
+    if re.search(
+        r"^(?:por\s+favor\s+)?(?:faz(?:er)?\s+(?:uma\s+)?)?(?:busc(?:a|ar)|varr(?:er|edura)|procur(?:a|ar))\s+(?:de\s+)?(?:cupons?|agora|promoc(?:oes|ões))",
+        texto_lower,
+    ):
+        registrar_log("Comando rápido: Iniciando varredura imediata")
+        threading.Thread(target=cupons.executar_varredura, daemon=True).start()
+        return "🔍 <b>Iniciando varredura imediata de cupons agora mesmo!</b>\nAssim que encontrar novidades, os cupons serão enviados no canal."
+
+    # 4. Limpeza de memória: "limpar histórico", "resetar histórico"
+    if re.search(
+        r"^(?:por\s+favor\s+)?(?:limp(?:ar|e)|reset(?:ar|e))\s+(?:o\s+)?(?:hist[oó]rico|mem[oó]ria)",
+        texto_lower,
+    ):
+        registrar_log("Comando rápido: Limpeza de memória")
+        cupons.salvar_memoria({})
+        return "🧹 <b>Histórico de cupons limpo com sucesso!</b>\nTodos os cupons válidos voltarão a ser enviados."
+
+    return None
+
+
+def executar_acoes_ia(texto, config):
+    """Detecta tags [ACAO: ...] retornadas pela IA, executa as modificações no sistema e limpa o texto."""
+    padrao = re.compile(r"\[ACAO:\s*([^\]]+)\]", re.IGNORECASE)
+    acoes = padrao.findall(texto)
+
+    modificou_config = False
+
+    for acao_str in acoes:
+        acao_str = acao_str.strip()
+        partes = acao_str.split(":", 1)
+        comando = partes[0].strip().upper()
+        param = partes[1].strip() if len(partes) > 1 else ""
+
+        if comando == "ATIVAR_LOJA":
+            loja = cupons.normalizar_nome_loja(param)
+            if loja and loja not in config.get("lojas_ativas", []):
+                config.setdefault("lojas_ativas", []).append(loja)
+                modificou_config = True
+                registrar_log(f"Ação da IA executada: Ativou loja {loja}")
+
+        elif comando == "DESATIVAR_LOJA":
+            loja = cupons.normalizar_nome_loja(param)
+            if loja and loja in config.get("lojas_ativas", []):
+                config["lojas_ativas"].remove(loja)
+                modificou_config = True
+                registrar_log(f"Ação da IA executada: Desativou loja {loja}")
+
+        elif comando in ["BUSCAR_CUPONS", "VARREDURA", "BUSCAR"]:
+            registrar_log("Ação da IA executada: Iniciando varredura imediata de cupons")
+            threading.Thread(target=cupons.executar_varredura, daemon=True).start()
+
+        elif comando in ["LIMPAR_HISTORICO", "LIMPAR"]:
+            registrar_log("Ação da IA executada: Limpando histórico de cupons")
+            cupons.salvar_memoria({})
+
+        elif comando == "ADICIONAR_CANAL":
+            canal_limpo = param.replace("@", "").replace("https://t.me/", "").replace("http://t.me/", "").strip("/ ")
+            if canal_limpo and canal_limpo not in config.get("canais_ativos", []):
+                config.setdefault("canais_ativos", []).append(canal_limpo)
+                modificou_config = True
+                registrar_log(f"Ação da IA executada: Adicionou canal @{canal_limpo}")
+
+        elif comando == "REMOVER_CANAL":
+            canal_limpo = param.replace("@", "").replace("https://t.me/", "").replace("http://t.me/", "").strip("/ ")
+            if canal_limpo and canal_limpo in config.get("canais_ativos", []):
+                config["canais_ativos"].remove(canal_limpo)
+                modificou_config = True
+                registrar_log(f"Ação da IA executada: Removeu canal @{canal_limpo}")
+
+    if modificou_config:
+        cupons.salvar_config(config)
+
+    texto_limpo = padrao.sub("", texto).strip()
+    return texto_limpo
+
+
 def consultar_ia(pergunta, config):
     """Consulta a IA (Groq com Llama 3 ou Gemini) para responder dúvidas de cupons e compras."""
     groq_key = (
@@ -212,15 +323,33 @@ def consultar_ia(pergunta, config):
         )
 
     lojas_ativas = ", ".join(config.get("lojas_ativas", []))
+    lojas_todas = list(cupons.INFO_LOJAS.keys())
+    lojas_desativadas = ", ".join([l for l in lojas_todas if l not in config.get("lojas_ativas", [])])
+    canais_ativos = ", ".join([f"@{c}" for c in config.get("canais_ativos", [])])
+    canal_destino = config.get("canal_cupons_id", "Não configurado")
+
     prompt_sistema = (
-        "Você é o assistente inteligente do BOT_ROD, especialista em cupons de desconto, "
-        "compras inteligentes e e-commerce brasileiro (Mercado Livre, Shopee, AliExpress, Amazon). "
-        "Você foi desenvolvido para ajudar o Rodrigo nas compras dele. "
-        f"Atualmente, as lojas ativas no bot dele são: {lojas_ativas}. "
-        "Responda às perguntas dele de forma direta, prestativa, amigável e realista sobre preços, "
-        "regras de cupons, melhores épocas para comprar e dicas de economia. "
-        "Use formatação simples para Telegram (como negrito com tags <b>palavra</b> ou <i>itálico</i>). "
-        "Seja conciso e direto ao ponto."
+        "Você é o assistente inteligente e administrador do BOT_ROD, o robô caçador de cupons do Rodrigo.\n"
+        "Você tira dúvidas de compras e TAMBÉM tem autoridade total para alterar as configurações do robô quando o Rodrigo pedir.\n\n"
+        "STATUS ATUAL DO SISTEMA:\n"
+        f"• Lojas ativas: {lojas_ativas if lojas_ativas else 'Nenhuma'}\n"
+        f"• Lojas desativadas: {lojas_desativadas if lojas_desativadas else 'Nenhuma'}\n"
+        f"• Lojas suportadas: Mercado Livre, Shopee, AliExpress, Amazon\n"
+        f"• Canais monitorados: {canais_ativos}\n"
+        f"• Canal destino dos cupons: ID {canal_destino}\n\n"
+        "AÇÕES QUE VOCÊ PODE EXECUTAR:\n"
+        "Quando o Rodrigo pedir qualquer alteração ou ação no sistema, você DEVE incluir a tag correspondente na sua resposta para o sistema executar de verdade:\n"
+        "• Para ativar loja: [ACAO: ATIVAR_LOJA: NomeDaLoja]\n"
+        "• Para desativar loja: [ACAO: DESATIVAR_LOJA: NomeDaLoja]\n"
+        "• Para buscar cupons agora: [ACAO: BUSCAR_CUPONS]\n"
+        "• Para limpar histórico de cupons: [ACAO: LIMPAR_HISTORICO]\n"
+        "• Para adicionar canal: [ACAO: ADICIONAR_CANAL: nome_do_canal]\n"
+        "• Para remover canal: [ACAO: REMOVER_CANAL: nome_do_canal]\n\n"
+        "Exemplos:\n"
+        "- Se ele disser 'desativa a shopee': você responde '[ACAO: DESATIVAR_LOJA: Shopee] Pronto, Rodrigo! Desativei a Shopee das buscas de cupons.'\n"
+        "- Se ele disser 'ativa a amazon e faz uma busca': você responde '[ACAO: ATIVAR_LOJA: Amazon] [ACAO: BUSCAR_CUPONS] Perfeito! Ativei a Amazon e acabei de disparar uma nova varredura de cupons.'\n"
+        "- Se ele apenas perguntar algo sobre compras ou cupons: responda normalmente sem tags de ação.\n"
+        "Use formatação simples para Telegram (como <b>negrito</b> ou <i>itálico</i>). Seja direto, amigável e prestativo."
     )
 
     # 1. Preferência principal: GROQ (Ultra rápido, gratuito e sem cartão)
@@ -510,10 +639,18 @@ def processar_update_ao_vivo(u, default_chat_id, config):
         threading.Thread(target=cupons.executar_varredura, daemon=True).start()
 
     else:
-        # Se não for comando com barra, a IA (Groq Llama 3) responde como assistente pessoal!
+        # 1. Tenta executar comandos diretos em linguagem natural (instantâneo)
+        resp_rapida = tentar_executar_comando_rapido(texto, config)
+        if resp_rapida:
+            cupons.enviar_telegram(target_chat_id, resp_rapida)
+            registrar_log(f"Comando rápido em linguagem natural executado para {target_chat_id}")
+            return
+
+        # 2. Se for uma conversa ou pedido elaborado, a IA processa e executa ações
         enviar_digitando(target_chat_id)
         resposta_ia = consultar_ia(texto, config)
-        cupons.enviar_telegram(target_chat_id, resposta_ia)
+        resposta_final = executar_acoes_ia(resposta_ia, config)
+        cupons.enviar_telegram(target_chat_id, resposta_final)
         registrar_log(f"Resposta da IA enviada para {target_chat_id}.")
 
 
