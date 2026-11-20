@@ -24,9 +24,12 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "application/json; charset=utf-8")
         self.end_headers()
-        tem_groq = bool(os.environ.get("GROQ_API_KEY"))
+        tem_groq = bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("GROQ") or os.environ.get("GROQ_TOKEN"))
         tem_gemini = bool(os.environ.get("GEMINI_API_KEY"))
         provedor = "Groq (Llama 3)" if tem_groq else ("Gemini" if tem_gemini else "Nenhum")
+
+        # Nomes das chaves presentes no ambiente (filtrando segredos)
+        chaves_relevantes = [k for k in os.environ.keys() if any(x in k.upper() for x in ["GROQ", "GEMINI", "BOT", "PORT"])]
 
         resposta = {
             "status": "online",
@@ -34,6 +37,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             "modo": "24h Tempo Real",
             "ia_conectada": tem_groq or tem_gemini,
             "provedor_ia": provedor,
+            "variaveis_detectadas": chaves_relevantes,
             "bot_token_conectado": bool(cupons.BOT_TOKEN),
             "lojas_ativas": cupons.carregar_config().get("lojas_ativas", []),
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -71,7 +75,7 @@ def enviar_digitando(chat_id):
 
 def consultar_ia(pergunta, config):
     """Consulta a IA (Groq com Llama 3 ou Gemini) para responder dúvidas de cupons e compras."""
-    groq_key = os.environ.get("GROQ_API_KEY")
+    groq_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("GROQ") or os.environ.get("GROQ_TOKEN")
     gemini_key = os.environ.get("GEMINI_API_KEY")
 
     if not groq_key and not gemini_key:
