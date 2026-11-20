@@ -1,14 +1,27 @@
 import http.server
 import json
 import os
+import re
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 import requests
 
 import cupons
 
 PORT = int(os.environ.get("PORT", 8080))
+
+# Buffer de logs recentes para diagnóstico remoto
+LOGS_RECENTES = deque(maxlen=30)
+
+
+def registrar_log(msg):
+    """Registra uma mensagem no console e no buffer em memória para diagnóstico."""
+    agora = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    linha = f"[{agora}] {msg}"
+    print(linha)
+    LOGS_RECENTES.append(linha)
 
 
 class HealthHandler(http.server.BaseHTTPRequestHandler):
@@ -24,12 +37,19 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "application/json; charset=utf-8")
         self.end_headers()
-        tem_groq = bool(os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("GROQ") or os.environ.get("GROQ_TOKEN"))
+        tem_groq = bool(
+            os.environ.get("GROQ_API_KEY")
+            or os.environ.get("GROQ_KEY")
+            or os.environ.get("GROQ")
+            or os.environ.get("GROQ_TOKEN")
+        )
         tem_gemini = bool(os.environ.get("GEMINI_API_KEY"))
         provedor = "Groq (Llama 3)" if tem_groq else ("Gemini" if tem_gemini else "Nenhum")
 
         # Nomes das chaves presentes no ambiente (filtrando segredos)
-        chaves_relevantes = [k for k in os.environ.keys() if any(x in k.upper() for x in ["GROQ", "GEMINI", "BOT", "PORT"])]
+        chaves_relevantes = [
+            k for k in os.environ.keys() if any(x in k.upper() for x in ["GROQ", "GEMINI", "BOT", "PORT", "CHAT"])
+        ]
 
         resposta = {
             "status": "online",
@@ -40,6 +60,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             "variaveis_detectadas": chaves_relevantes,
             "bot_token_conectado": bool(cupons.BOT_TOKEN),
             "lojas_ativas": cupons.carregar_config().get("lojas_ativas", []),
+            "ultimos_logs": list(LOGS_RECENTES),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         self.wfile.write(json.dumps(resposta, ensure_ascii=False, indent=2).encode("utf-8"))
@@ -51,11 +72,8 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
 
 def rodar_servidor_http():
     server = http.server.HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    print(f"🌐 Servidor HTTP ativo na porta {PORT} (Healthcheck e Keep-Alive)")
+    registrar_log(f"🌐 Servidor HTTP ativo na porta {PORT} (Healthcheck e Keep-Alive)")
     server.serve_forever()
-
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 
 def enviar_digitando(chat_id):
@@ -73,9 +91,25 @@ def enviar_digitando(chat_id):
         pass
 
 
+def formatar_para_telegram(texto):
+    """Converte Markdown comum (**negrito**) para tags HTML simples do Telegram."""
+    if not texto:
+        return ""
+    # Converte negrito **texto** para <b>texto</b>
+    texto = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto)
+    # Converte itálico *texto* para <i>texto</i>
+    texto = re.sub(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", r"<i>\1</i>", texto)
+    return texto
+
+
 def consultar_ia(pergunta, config):
     """Consulta a IA (Groq com Llama 3 ou Gemini) para responder dúvidas de cupons e compras."""
-    groq_key = os.environ.get("GROQ_API_KEY") or os.environ.get("GROQ_KEY") or os.environ.get("GROQ") or os.environ.get("GROQ_TOKEN")
+    groq_key = (
+        os.environ.get("GROQ_API_KEY")
+        or os.environ.get("GROQ_KEY")
+        or os.environ.get("GROQ")
+        or os.environ.get("GROQ_TOKEN")
+    )
     gemini_key = os.environ.get("GEMINI_API_KEY")
 
     if not groq_key and not gemini_key:
@@ -94,8 +128,8 @@ def consultar_ia(pergunta, config):
         f"Atualmente, as lojas ativas no bot dele são: {lojas_ativas}. "
         "Responda às perguntas dele de forma direta, prestativa, amigável e realista sobre preços, "
         "regras de cupons, melhores épocas para comprar e dicas de economia. "
-        "Use formatação simples para Telegram (como <b>negrito</b> ou <i>itálico</i>). "
-        "Não use asteriscos duplos (**), use tags HTML <b>palavra</b> para negrito."
+        "Use formatação simples para Telegram (como negrito com tags <b>palavra</b> ou <i>itálico</i>). "
+        "Seja conciso e direto ao ponto."
     )
 
     # 1. Preferência principal: GROQ (Ultra rápido, gratuito e sem cartão)
@@ -116,16 +150,18 @@ def consultar_ia(pergunta, config):
                 "max_tokens": 800,
             }
             try:
+                registrar_log(f"Chamando Groq ({modelo})...")
                 resp = requests.post(url_groq, headers=headers_groq, json=payload_groq, timeout=20)
                 if resp.status_code == 200:
                     dados = resp.json()
                     texto = dados["choices"][0]["message"]["content"].strip()
-                    texto = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto)
+                    texto = formatar_para_telegram(texto)
+                    registrar_log(f"Groq ({modelo}) respondeu com sucesso ({len(texto)} chars).")
                     return texto
                 else:
-                    print(f"Groq {modelo} status {resp.status_code}: {resp.text[:120]}")
+                    registrar_log(f"Groq ({modelo}) retornou erro {resp.status_code}: {resp.text[:150]}")
             except Exception as e:
-                print(f"Erro ao chamar Groq {modelo}: {e}")
+                registrar_log(f"Exceção ao chamar Groq ({modelo}): {e}")
 
     # 2. Alternativa: GEMINI
     if gemini_key:
@@ -137,6 +173,7 @@ def consultar_ia(pergunta, config):
         for mod in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
             url_gemini = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={gemini_key.strip()}"
             try:
+                registrar_log(f"Chamando Gemini ({mod})...")
                 resp = requests.post(url_gemini, headers=headers_gemini, json=payload_gemini, timeout=20)
                 if resp.status_code == 200:
                     dados = resp.json()
@@ -145,15 +182,18 @@ def consultar_ia(pergunta, config):
                         partes = cands[0].get("content", {}).get("parts", [])
                         if partes:
                             texto_resposta = partes[0].get("text", "").strip()
-                            texto_resposta = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto_resposta)
+                            texto_resposta = formatar_para_telegram(texto_resposta)
+                            registrar_log(f"Gemini ({mod}) respondeu com sucesso.")
                             return texto_resposta
+                else:
+                    registrar_log(f"Gemini ({mod}) retornou erro {resp.status_code}: {resp.text[:150]}")
             except Exception as e:
-                print(f"Erro ao chamar Gemini {mod}: {e}")
+                registrar_log(f"Exceção ao chamar Gemini ({mod}): {e}")
 
     return "⚠️ Ops, tive uma instabilidade temporária ao consultar a IA. Tente perguntar novamente em alguns instantes!"
 
 
-def processar_update_ao_vivo(u, chat_id, config):
+def processar_update_ao_vivo(u, default_chat_id, config):
     """Processa eventos do Telegram em tempo real (sub-segundo)."""
     # 1. Detecção automática de Canal de Cupons
     mcm = u.get("my_chat_member")
@@ -163,11 +203,12 @@ def processar_update_ao_vivo(u, chat_id, config):
         if config.get("canal_cupons_id") != cid:
             config["canal_cupons_id"] = cid
             cupons.salvar_config(config)
+            registrar_log(f"Canal vinculado automaticamente: {title} ({cid})")
             cupons.enviar_telegram(
-                chat_id,
+                default_chat_id,
                 f"🎉 <b>Canal vinculado com sucesso!</b>\n"
                 f"A partir de agora, os cupons serão enviados para o canal <b>{title}</b>.\n\n"
-                f"Sua conversa privada aqui com o BOT_ROD fica 100% limpa e exclusiva para configurações!",
+                f"Sua conversa privada aqui com o BOT_ROD fica 100% limpa e exclusiva para você conversar!",
             )
 
     cp = u.get("channel_post")
@@ -177,37 +218,48 @@ def processar_update_ao_vivo(u, chat_id, config):
         if config.get("canal_cupons_id") != cid:
             config["canal_cupons_id"] = cid
             cupons.salvar_config(config)
+            registrar_log(f"Canal vinculado automaticamente via post: {title} ({cid})")
             cupons.enviar_telegram(
-                chat_id,
+                default_chat_id,
                 f"🎉 <b>Canal vinculado com sucesso!</b>\n"
                 f"A partir de agora, os cupons serão enviados para o canal <b>{title}</b>.\n\n"
-                f"Sua conversa privada aqui com o BOT_ROD fica 100% limpa e exclusiva para configurações!",
+                f"Sua conversa privada aqui com o BOT_ROD fica 100% limpa e exclusiva para você conversar!",
             )
 
     msg = u.get("message") or u.get("edited_message")
     if not msg:
         return
 
-    remetente_id = str(msg.get("chat", {}).get("id", ""))
-    if remetente_id != str(chat_id):
+    remetente_id = msg.get("chat", {}).get("id")
+    tipo_chat = msg.get("chat", {}).get("type", "")
+
+    # Se for mensagem privada, respondemos sempre de volta para o usuário no privado
+    if tipo_chat == "private":
+        target_chat_id = remetente_id
+    elif str(remetente_id) == str(default_chat_id):
+        target_chat_id = default_chat_id
+    else:
+        # Ignora mensagens vindas de outros canais ou grupos abertos
         return
 
     if "voice" in msg or "audio" in msg:
         texto_ajuda = (
             "🎙️ <i>Recebi sua mensagem de áudio em tempo real!</i>\n\n"
-            "Para gerenciar o bot, use os comandos em texto:\n"
+            "Para gerenciar o bot, use comandos em texto como:\n"
             "• <code>/status</code> - Vê lojas e canais ativos\n"
             "• <code>/ativar aliexpress</code> (ou ml, shopee, amazon)\n"
             "• <code>/desativar shopee</code>\n"
-            "• <code>/addcanal nome_do_canal</code>\n"
-            "• <code>/menu</code> - Ver todas as opções"
+            "• <code>/menu</code> - Ver todas as opções\n\n"
+            "Ou envie uma mensagem de texto com qualquer dúvida sobre cupons!"
         )
-        cupons.enviar_telegram(chat_id, texto_ajuda)
+        cupons.enviar_telegram(target_chat_id, texto_ajuda)
         return
 
     texto = msg.get("text", "").strip()
     if not texto:
         return
+
+    registrar_log(f"Mensagem recebida de {remetente_id} ({tipo_chat}): {texto[:50]}")
 
     partes = texto.split(maxsplit=1)
     comando = partes[0].lower()
@@ -219,7 +271,9 @@ def processar_update_ao_vivo(u, chat_id, config):
         menu = (
             "🤖 <b>PAINEL DE CONTROLE EM TEMPO REAL (BOT_ROD)</b>\n"
             "────────────────────────────────\n"
-            "Estou online 24h! Envie um comando para alterar agora mesmo:\n\n"
+            "Estou online 24h! Envie um comando ou converse comigo:\n\n"
+            "💬 <b>CONVERSAR COM A IA:</b>\n"
+            "• Basta me enviar qualquer pergunta ou mensagem diretamente!\n\n"
             "📊 <b>CONSULTA:</b>\n"
             "• <code>/status</code> - Lojas e canais ativos no momento\n\n"
             "🏬 <b>ATIVAR / DESATIVAR LOJAS:</b>\n"
@@ -235,7 +289,7 @@ def processar_update_ao_vivo(u, chat_id, config):
             "• <code>/buscar</code> - Força uma varredura imediatamente\n"
             "• <code>/limpar</code> - Limpa histórico para reenviar cupons"
         )
-        cupons.enviar_telegram(chat_id, menu)
+        cupons.enviar_telegram(target_chat_id, menu)
 
     elif cmd_puro in ["status", "satus", "staus", "config"]:
         lojas_msg = []
@@ -259,14 +313,14 @@ def processar_update_ao_vivo(u, chat_id, config):
             + f"📡 <b>Fontes Monitoradas ({len(config['canais_ativos'])}):</b>\n"
             + "\n".join(canais_msg)
             + "\n────────────────────────────────\n"
-            "<i>Digite /menu para ver os comandos</i>"
+            "<i>Digite /menu para ver os comandos ou envie uma pergunta para a IA!</i>"
         )
-        cupons.enviar_telegram(chat_id, status_txt)
+        cupons.enviar_telegram(target_chat_id, status_txt)
 
     elif cmd_puro in ["ativar", "enable"]:
         if not parametro:
             cupons.enviar_telegram(
-                chat_id,
+                target_chat_id,
                 "❓ Qual loja você quer ativar?\nExemplo: <code>/ativar aliexpress</code> ou <code>/ativar shopee</code>",
             )
         else:
@@ -276,21 +330,21 @@ def processar_update_ao_vivo(u, chat_id, config):
                     config["lojas_ativas"].append(loja)
                     cupons.salvar_config(config)
                     cupons.enviar_telegram(
-                        chat_id,
+                        target_chat_id,
                         f"✅ Loja <b>{loja}</b> foi <b>ATIVADA</b> em tempo real!\nO bot já começará a buscar cupons dela.",
                     )
                 else:
-                    cupons.enviar_telegram(chat_id, f"ℹ️ A loja <b>{loja}</b> já está ativa nas buscas.")
+                    cupons.enviar_telegram(target_chat_id, f"ℹ️ A loja <b>{loja}</b> já está ativa nas buscas.")
             else:
                 cupons.enviar_telegram(
-                    chat_id,
+                    target_chat_id,
                     "❓ Loja não reconhecida.\nLojas disponíveis: <code>ml</code>, <code>shopee</code>, <code>aliexpress</code>, <code>amazon</code>.",
                 )
 
     elif cmd_puro in ["desativar", "disable"]:
         if not parametro:
             cupons.enviar_telegram(
-                chat_id,
+                target_chat_id,
                 "❓ Qual loja você quer desativar?\nExemplo: <code>/desativar shopee</code>",
             )
         else:
@@ -300,21 +354,21 @@ def processar_update_ao_vivo(u, chat_id, config):
                     config["lojas_ativas"].remove(loja)
                     cupons.salvar_config(config)
                     cupons.enviar_telegram(
-                        chat_id,
+                        target_chat_id,
                         f"🛑 Loja <b>{loja}</b> foi <b>DESATIVADA</b> em tempo real!\nO bot não buscará mais cupons dela.",
                     )
                 else:
-                    cupons.enviar_telegram(chat_id, f"ℹ️ A loja <b>{loja}</b> já não estava ativa.")
+                    cupons.enviar_telegram(target_chat_id, f"ℹ️ A loja <b>{loja}</b> já não estava ativa.")
             else:
                 cupons.enviar_telegram(
-                    chat_id,
+                    target_chat_id,
                     "❓ Loja não reconhecida.\nLojas disponíveis: <code>ml</code>, <code>shopee</code>, <code>aliexpress</code>, <code>amazon</code>.",
                 )
 
     elif cmd_puro in ["addcanal", "adicionarcanal", "add_canal"]:
         if not parametro:
             cupons.enviar_telegram(
-                chat_id,
+                target_chat_id,
                 "❓ Qual canal deseja adicionar?\nExemplo: <code>/addcanal CuponsTecnan</code>",
             )
         else:
@@ -324,16 +378,16 @@ def processar_update_ao_vivo(u, chat_id, config):
                     config["canais_ativos"].append(canal_limpo)
                     cupons.salvar_config(config)
                     cupons.enviar_telegram(
-                        chat_id,
+                        target_chat_id,
                         f"✅ Canal <b>@{canal_limpo}</b> adicionado à lista de monitoramento!",
                     )
                 else:
-                    cupons.enviar_telegram(chat_id, f"ℹ️ O canal <b>@{canal_limpo}</b> já está na lista.")
+                    cupons.enviar_telegram(target_chat_id, f"ℹ️ O canal <b>@{canal_limpo}</b> já está na lista.")
 
     elif cmd_puro in ["rmcanal", "removercanal", "delcanal"]:
         if not parametro:
             cupons.enviar_telegram(
-                chat_id,
+                target_chat_id,
                 "❓ Qual canal deseja remover?\nExemplo: <code>/rmcanal radarcupons</code>",
             )
         else:
@@ -342,38 +396,39 @@ def processar_update_ao_vivo(u, chat_id, config):
                 config["canais_ativos"].remove(canal_limpo)
                 cupons.salvar_config(config)
                 cupons.enviar_telegram(
-                    chat_id,
+                    target_chat_id,
                     f"🗑️ Canal <b>@{canal_limpo}</b> foi removido do monitoramento.",
                 )
             else:
                 cupons.enviar_telegram(
-                    chat_id,
+                    target_chat_id,
                     f"⚠️ Canal <b>@{canal_limpo}</b> não foi encontrado na lista de canais ativos.",
                 )
 
     elif cmd_puro in ["limpar", "reset", "clear"]:
         cupons.salvar_memoria({})
         cupons.enviar_telegram(
-            chat_id,
+            target_chat_id,
             "🧹 <b>Histórico de cupons limpo!</b>\nTodos os cupons válidos disponíveis serão reenviados no canal.",
         )
 
     elif cmd_puro in ["buscar", "varrer"]:
-        cupons.enviar_telegram(chat_id, "🔍 <b>Iniciando varredura imediata de cupons...</b>")
+        cupons.enviar_telegram(target_chat_id, "🔍 <b>Iniciando varredura imediata de cupons...</b>")
         threading.Thread(target=cupons.executar_varredura, daemon=True).start()
 
     else:
-        # Se não for comando com barra, o Gemini responde como assistente pessoal com IA!
-        enviar_digitando(chat_id)
+        # Se não for comando com barra, a IA (Groq Llama 3) responde como assistente pessoal!
+        enviar_digitando(target_chat_id)
         resposta_ia = consultar_ia(texto, config)
-        cupons.enviar_telegram(chat_id, resposta_ia)
+        cupons.enviar_telegram(target_chat_id, resposta_ia)
+        registrar_log(f"Resposta da IA enviada para {target_chat_id}.")
 
 
 def loop_escuta_telegram():
     """Escuta mensagens do Telegram continuamente com Long Polling (tempo real)."""
     chat_id = cupons.obter_chat_id()
     config = cupons.carregar_config()
-    print(f"👂 Escutando Telegram em tempo real para chat_id {chat_id}...")
+    registrar_log(f"👂 Escutando Telegram em tempo real (chat padrão: {chat_id})...")
 
     offset = config.get("ultimo_update_id", 0) + 1
 
@@ -388,6 +443,7 @@ def loop_escuta_telegram():
             url = f"https://api.telegram.org/bot{token}/getUpdates"
             resp = requests.get(url, params={"offset": offset, "timeout": 20}, timeout=30)
             if not resp.ok:
+                registrar_log(f"Telegram getUpdates status {resp.status_code}: {resp.text[:80]}")
                 time.sleep(2)
                 continue
 
@@ -403,7 +459,7 @@ def loop_escuta_telegram():
                 cupons.salvar_config(config)
 
         except Exception as e:
-            # Em caso de instabilidade de rede temporária, espera 3s e continua
+            registrar_log(f"Exceção no loop do Telegram: {e}")
             time.sleep(3)
 
 
@@ -413,16 +469,17 @@ def loop_varredura_periodica():
     time.sleep(15)
     while True:
         try:
-            print(f"⏰ [{datetime.now().strftime('%H:%M:%S')}] Iniciando ciclo automático de varredura...")
+            agora_str = datetime.now().strftime("%H:%M:%S")
+            registrar_log(f"⏰ [{agora_str}] Iniciando ciclo automático de varredura...")
             cupons.executar_varredura()
         except Exception as e:
-            print(f"Erro no ciclo de varredura: {e}")
+            registrar_log(f"Erro no ciclo de varredura: {e}")
         # 15 minutos = 900 segundos
         time.sleep(900)
 
 
 def main():
-    print("🚀 Iniciando Bot Caçador de Cupons (Modo 24h Tempo Real)...")
+    registrar_log("🚀 Iniciando Bot Caçador de Cupons (Modo 24h Tempo Real)...")
     cupons.carregar_config()
 
     # 1. Thread do Servidor HTTP (Healthcheck Render / Keep-Alive)

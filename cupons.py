@@ -190,7 +190,7 @@ def enviar_telegram(chat_id, texto, botoes=None, silencioso=False):
         r = requests.post(url, json=payload, timeout=10)
         if not r.ok:
             # Se a formatação HTML falhou (erro 400 do Telegram), tenta reenviar como texto puro
-            if r.status_code == 400 and ("parse" in r.text.lower() or "can't" in r.text.lower()):
+            if "parse_mode" in payload:
                 payload.pop("parse_mode", None)
                 r_fallback = requests.post(url, json=payload, timeout=10)
                 if r_fallback.ok:
