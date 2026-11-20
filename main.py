@@ -28,6 +28,8 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             "status": "online",
             "bot": "BOT_ROD",
             "modo": "24h Tempo Real",
+            "gemini_conectado": bool(os.environ.get("GEMINI_API_KEY")),
+            "bot_token_conectado": bool(cupons.BOT_TOKEN),
             "lojas_ativas": cupons.carregar_config().get("lojas_ativas", []),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -63,8 +65,9 @@ def enviar_digitando(chat_id):
 
 
 def consultar_gemini(pergunta, config):
-    """Consulta o modelo Gemini 1.5 Flash para responder dúvidas de cupons e compras."""
-    if not GEMINI_API_KEY:
+    """Consulta a IA do Gemini para responder dúvidas de cupons e compras."""
+    api_key = os.environ.get("GEMINI_API_KEY") or GEMINI_API_KEY
+    if not api_key:
         return (
             "🤖 <b>Olá, Rodrigo!</b>\n\n"
             "Meu cérebro de Inteligência Artificial ainda não foi conectado. "
@@ -74,18 +77,16 @@ def consultar_gemini(pergunta, config):
         )
 
     lojas_ativas = ", ".join(config.get("lojas_ativas", []))
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     headers = {"Content-Type": "application/json"}
 
     prompt_sistema = (
         "Você é o assistente inteligente do BOT_ROD, especialista em cupons de desconto, "
         "compras inteligentes e e-commerce brasileiro (Mercado Livre, Shopee, AliExpress, Amazon). "
-        "Você foi desenvolvido para ajudar o Rodrigo nas compras dele. "
+        "Você conversa com o Rodrigo. "
         f"Atualmente, as lojas ativas no bot dele são: {lojas_ativas}. "
         "Responda às perguntas dele de forma direta, prestativa, amigável e realista sobre preços, "
         "regras de cupons, melhores épocas para comprar e dicas de economia. "
-        "Use formatação simples compatível com Telegram (como <b>negrito</b> ou <i>itálico</i>). "
-        "Não use markdown com asteriscos duplos (**), use tags HTML <b>palavra</b> para negrito."
+        "Use texto limpo sem formatações complexas."
     )
 
     payload = {
@@ -93,21 +94,27 @@ def consultar_gemini(pergunta, config):
         "systemInstruction": {"parts": [{"text": prompt_sistema}]},
     }
 
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=25)
-        if resp.status_code == 200:
-            dados = resp.json()
-            cands = dados.get("candidates", [])
-            if cands:
-                partes = cands[0].get("content", {}).get("parts", [])
-                if partes:
-                    texto_resposta = partes[0].get("text", "").strip()
-                    # Converte ** em <b> por segurança
-                    texto_resposta = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto_resposta)
-                    return texto_resposta
-        return f"⚠️ Ops, tive uma instabilidade com a IA (Código {resp.status_code}). Tente perguntar novamente!"
-    except Exception as e:
-        return f"⚠️ Erro ao consultar o cérebro da IA: {e}"
+    # Tenta modelos disponíveis (gemini-1.5-flash ou gemini-2.0-flash ou gemini-1.5-pro)
+    modelos = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+    for mod in modelos:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={api_key}"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=25)
+            if resp.status_code == 200:
+                dados = resp.json()
+                cands = dados.get("candidates", [])
+                if cands:
+                    partes = cands[0].get("content", {}).get("parts", [])
+                    if partes:
+                        texto_resposta = partes[0].get("text", "").strip()
+                        texto_resposta = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto_resposta)
+                        return texto_resposta
+            else:
+                print(f"Gemini {mod} retornou status {resp.status_code}: {resp.text[:150]}")
+        except Exception as e:
+            print(f"Erro ao chamar Gemini {mod}: {e}")
+
+    return "⚠️ Ops, tive uma instabilidade temporária ao consultar o cérebro da IA. Tente perguntar novamente!"
 
 
 def processar_update_ao_vivo(u, chat_id, config):
