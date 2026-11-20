@@ -85,7 +85,11 @@ def obter_modelos_groq(groq_key):
 class HealthHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/varrer":
-            threading.Thread(target=cupons.executar_varredura, daemon=True).start()
+            threading.Thread(
+                target=cupons.executar_varredura,
+                kwargs={"ignorar_horario": True},
+                daemon=True,
+            ).start()
             self.send_response(200)
             self.send_header("Content-type", "text/plain; charset=utf-8")
             self.end_headers()
@@ -193,7 +197,7 @@ def formatar_para_telegram(texto):
     return texto
 
 
-def tentar_executar_comando_rapido(texto, config):
+def tentar_executar_comando_rapido(texto, config, target_chat_id=None):
     """Execução instantânea (sub-segundo) para frases comuns de comando em linguagem natural."""
     texto_lower = texto.lower().strip()
 
@@ -232,9 +236,13 @@ def tentar_executar_comando_rapido(texto, config):
         r"^(?:por\s+favor\s+)?(?:faz(?:er)?\s+(?:uma\s+)?)?(?:busc(?:a|ar)|varr(?:er|edura)|procur(?:a|ar))\s+(?:de\s+)?(?:cupons?|agora|promoc(?:oes|ões))",
         texto_lower,
     ):
-        registrar_log("Comando rápido: Iniciando varredura imediata")
-        threading.Thread(target=cupons.executar_varredura, daemon=True).start()
-        return "🔍 <b>Iniciando varredura imediata de cupons agora mesmo!</b>\nAssim que encontrar novidades, os cupons serão enviados no canal."
+        registrar_log("Comando rápido: Iniciando varredura manual (ignora horário noturno)")
+        threading.Thread(
+            target=cupons.executar_varredura,
+            kwargs={"ignorar_horario": True, "chat_resposta": target_chat_id},
+            daemon=True,
+        ).start()
+        return "🔍 <b>Iniciando varredura imediata de cupons agora mesmo!</b>\nBuscando em todos os sites e canais parceiros. Já te aviso aqui assim que terminar."
 
     # 4. Limpeza de memória: "limpar histórico", "resetar histórico"
     if re.search(
@@ -248,7 +256,7 @@ def tentar_executar_comando_rapido(texto, config):
     return None
 
 
-def executar_acoes_ia(texto, config):
+def executar_acoes_ia(texto, config, target_chat_id=None):
     """Detecta tags [ACAO: ...] retornadas pela IA, executa as modificações no sistema e limpa o texto."""
     padrao = re.compile(r"\[ACAO:\s*([^\]]+)\]", re.IGNORECASE)
     acoes = padrao.findall(texto)
@@ -276,8 +284,12 @@ def executar_acoes_ia(texto, config):
                 registrar_log(f"Ação da IA executada: Desativou loja {loja}")
 
         elif comando in ["BUSCAR_CUPONS", "VARREDURA", "BUSCAR"]:
-            registrar_log("Ação da IA executada: Iniciando varredura imediata de cupons")
-            threading.Thread(target=cupons.executar_varredura, daemon=True).start()
+            registrar_log("Ação da IA executada: Iniciando varredura manual (ignora horário noturno)")
+            threading.Thread(
+                target=cupons.executar_varredura,
+                kwargs={"ignorar_horario": True, "chat_resposta": target_chat_id},
+                daemon=True,
+            ).start()
 
         elif comando in ["LIMPAR_HISTORICO", "LIMPAR"]:
             registrar_log("Ação da IA executada: Limpando histórico de cupons")
@@ -635,12 +647,16 @@ def processar_update_ao_vivo(u, default_chat_id, config):
         )
 
     elif cmd_puro in ["buscar", "varrer"]:
-        cupons.enviar_telegram(target_chat_id, "🔍 <b>Iniciando varredura imediata de cupons...</b>")
-        threading.Thread(target=cupons.executar_varredura, daemon=True).start()
+        cupons.enviar_telegram(target_chat_id, "🔍 <b>Iniciando varredura imediata de cupons...</b>\nBuscando em todos os parceiros. Já te aviso aqui assim que terminar.")
+        threading.Thread(
+            target=cupons.executar_varredura,
+            kwargs={"ignorar_horario": True, "chat_resposta": target_chat_id},
+            daemon=True,
+        ).start()
 
     else:
         # 1. Tenta executar comandos diretos em linguagem natural (instantâneo)
-        resp_rapida = tentar_executar_comando_rapido(texto, config)
+        resp_rapida = tentar_executar_comando_rapido(texto, config, target_chat_id)
         if resp_rapida:
             cupons.enviar_telegram(target_chat_id, resp_rapida)
             registrar_log(f"Comando rápido em linguagem natural executado para {target_chat_id}")
@@ -649,7 +665,7 @@ def processar_update_ao_vivo(u, default_chat_id, config):
         # 2. Se for uma conversa ou pedido elaborado, a IA processa e executa ações
         enviar_digitando(target_chat_id)
         resposta_ia = consultar_ia(texto, config)
-        resposta_final = executar_acoes_ia(resposta_ia, config)
+        resposta_final = executar_acoes_ia(resposta_ia, config, target_chat_id)
         cupons.enviar_telegram(target_chat_id, resposta_final)
         registrar_log(f"Resposta da IA enviada para {target_chat_id}.")
 

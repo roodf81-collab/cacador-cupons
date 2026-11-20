@@ -664,7 +664,7 @@ def formatar_tabela_loja(nome_loja, emoji_loja, cupons):
     return "\n".join(linhas)
 
 
-def executar_varredura():
+def executar_varredura(ignorar_horario=False, chat_resposta=None):
     chat_id = obter_chat_id()
     if not chat_id:
         print("Chat ID não encontrado.")
@@ -683,9 +683,10 @@ def executar_varredura():
     agora_br = datetime.now(fuso_brasil)
     horario_envio = agora_br.strftime("%d/%m/%Y às %H:%M")
 
-    # Não verifica entre 23:00 e 07:00 (repouso na madrugada)
-    if agora_br.hour >= 23 or agora_br.hour < 7:
-        print(f"[{horario_envio}] Período noturno (23h às 07h). Varredura suspensa para repouso.")
+    # Se for varredura periódica automática, respeita o repouso noturno (23:00 às 07:00)
+    # Se ignorar_horario=True (pedido manual do usuário), busca a qualquer hora do dia ou da noite!
+    if not ignorar_horario and (agora_br.hour >= 23 or agora_br.hour < 7):
+        print(f"[{horario_envio}] Período noturno (23h às 07h). Varredura periódica suspensa para repouso.")
         return
 
     if not lojas_ativas:
@@ -712,16 +713,14 @@ def executar_varredura():
 
     if total_novos == 0:
         print(f"[{horario_envio}] Nenhum cupom novo encontrado.")
-        lojas_str = ", ".join(lojas_ativas)
-        msg_sem_cupom = (
-            "🔍 <b>STATUS: VARREDURA CONCLUÍDA</b>\n"
-            "────────────────────────────────\n"
-            f"Fiz a busca nos canais e sites parceiros, mas <b>não há cupons novos</b> de {lojas_str} neste momento.\n"
-            "────────────────────────────────\n"
-            f"⏱️ <i>Verificado em: {horario_envio}</i>"
-        )
-        destino_cupons = config.get("canal_cupons_id") or chat_id
-        enviar_telegram(destino_cupons, msg_sem_cupom)
+        if chat_resposta:
+            lojas_str = ", ".join(lojas_ativas)
+            msg_sem_cupom = (
+                "🔍 <b>Varredura concluída!</b>\n"
+                f"Fiz a busca agora mesmo, mas <b>não há cupons novos</b> de {lojas_str} neste momento.\n\n"
+                f"<i>Todos os cupons válidos anteriores continuam disponíveis no canal.</i>"
+            )
+            enviar_telegram(chat_resposta, msg_sem_cupom)
         salvar_memoria(memoria_cupons)
         return
 
@@ -756,6 +755,13 @@ def executar_varredura():
             memoria_cupons[cod] = agora_iso
 
     salvar_memoria(memoria_cupons)
+
+    if chat_resposta:
+        enviar_telegram(
+            chat_resposta,
+            f"🎉 <b>Varredura concluída!</b>\n"
+            f"Encontrei <b>{total_novos} novos cupons</b> e acabei de publicar todos no canal!"
+        )
 
 
 if __name__ == "__main__":
