@@ -25,6 +25,25 @@ def registrar_log(msg):
     LOGS_RECENTES.append(linha)
 
 
+def rank_modelo(m):
+    m_lower = m.lower()
+    if "gpt-oss-120b" in m_lower:
+        return 0
+    if "gpt-oss-20b" in m_lower:
+        return 1
+    if "llama-3.3-70b" in m_lower:
+        return 2
+    if "llama-3.1-8b" in m_lower:
+        return 3
+    if "qwen3.8-27b" in m_lower or "qwen" in m_lower:
+        return 4
+    if "llama" in m_lower:
+        return 5
+    if "gpt" in m_lower:
+        return 6
+    return 10
+
+
 def obter_modelos_groq(groq_key):
     """Consulta dinamicamente os modelos ativos e permitidos para esta chave na Groq."""
     global MODELOS_GROQ_CACHE
@@ -37,14 +56,14 @@ def obter_modelos_groq(groq_key):
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             itens = r.json().get("data", [])
+            excluir = ["whisper", "guard", "orpheus", "arabic", "safeguard"]
             ids = [
                 m["id"]
                 for m in itens
-                if "whisper" not in m.get("id", "").lower() and "guard" not in m.get("id", "").lower()
+                if not any(ex in m.get("id", "").lower() for ex in excluir)
             ]
-            # Prioriza modelos Llama ou mais recentes
-            ids.sort(key=lambda x: (0 if "llama" in x.lower() else 1, 0 if "70b" in x.lower() else 1))
-            registrar_log(f"Modelos Groq encontrados ({len(ids)}): {ids}")
+            ids.sort(key=rank_modelo)
+            registrar_log(f"Modelos Groq selecionados ({len(ids)}): {ids}")
             if ids:
                 MODELOS_GROQ_CACHE = ids
                 return ids
@@ -55,12 +74,11 @@ def obter_modelos_groq(groq_key):
 
     # Fallback caso a listagem falhe
     return [
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "llama3-70b-8192",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
     ]
 
 
@@ -80,6 +98,21 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             or os.environ.get("GROQ")
             or os.environ.get("GROQ_TOKEN")
         )
+
+        if self.path == "/test-ia":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.end_headers()
+            cfg = cupons.carregar_config()
+            resp_teste = consultar_ia("Olá! Me fale rapidamente uma dica de cupom.", cfg)
+            self.wfile.write(
+                json.dumps(
+                    {"resposta_ia": resp_teste, "logs": list(LOGS_RECENTES)},
+                    ensure_ascii=False,
+                    indent=2,
+                ).encode("utf-8")
+            )
+            return
 
         if self.path == "/modelos":
             self.send_response(200)
@@ -102,7 +135,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         tem_groq = bool(groq_key)
         tem_gemini = bool(os.environ.get("GEMINI_API_KEY"))
-        provedor = "Groq (Llama 3)" if tem_groq else ("Gemini" if tem_gemini else "Nenhum")
+        nome_modelo = f"Groq ({MODELOS_GROQ_CACHE[0]})" if (tem_groq and MODELOS_GROQ_CACHE) else ("Groq" if tem_groq else ("Gemini" if tem_gemini else "Nenhum"))
 
         # Nomes das chaves presentes no ambiente (filtrando segredos)
         chaves_relevantes = [
@@ -114,7 +147,7 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             "bot": "BOT_ROD",
             "modo": "24h Tempo Real",
             "ia_conectada": tem_groq or tem_gemini,
-            "provedor_ia": provedor,
+            "provedor_ia": nome_modelo,
             "variaveis_detectadas": chaves_relevantes,
             "bot_token_conectado": bool(cupons.BOT_TOKEN),
             "lojas_ativas": cupons.carregar_config().get("lojas_ativas", []),
