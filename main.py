@@ -13,7 +13,8 @@ import cupons
 PORT = int(os.environ.get("PORT", 8080))
 
 # Buffer de logs recentes para diagnóstico remoto
-LOGS_RECENTES = deque(maxlen=30)
+LOGS_RECENTES = deque(maxlen=35)
+MODELOS_GROQ_CACHE = []
 
 
 def registrar_log(msg):
@@ -22,6 +23,45 @@ def registrar_log(msg):
     linha = f"[{agora}] {msg}"
     print(linha)
     LOGS_RECENTES.append(linha)
+
+
+def obter_modelos_groq(groq_key):
+    """Consulta dinamicamente os modelos ativos e permitidos para esta chave na Groq."""
+    global MODELOS_GROQ_CACHE
+    if MODELOS_GROQ_CACHE:
+        return MODELOS_GROQ_CACHE
+
+    url = "https://api.groq.com/openai/v1/models"
+    headers = {"Authorization": f"Bearer {groq_key.strip()}"}
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            itens = r.json().get("data", [])
+            ids = [
+                m["id"]
+                for m in itens
+                if "whisper" not in m.get("id", "").lower() and "guard" not in m.get("id", "").lower()
+            ]
+            # Prioriza modelos Llama ou mais recentes
+            ids.sort(key=lambda x: (0 if "llama" in x.lower() else 1, 0 if "70b" in x.lower() else 1))
+            registrar_log(f"Modelos Groq encontrados ({len(ids)}): {ids}")
+            if ids:
+                MODELOS_GROQ_CACHE = ids
+                return ids
+        else:
+            registrar_log(f"Erro ao listar modelos Groq ({r.status_code}): {r.text[:150]}")
+    except Exception as e:
+        registrar_log(f"Exceção ao listar modelos Groq: {e}")
+
+    # Fallback caso a listagem falhe
+    return [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it",
+    ]
 
 
 class HealthHandler(http.server.BaseHTTPRequestHandler):
@@ -34,15 +74,33 @@ class HealthHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Varredura iniciada em segundo plano!\n")
             return
 
-        self.send_response(200)
-        self.send_header("Content-type", "application/json; charset=utf-8")
-        self.end_headers()
-        tem_groq = bool(
+        groq_key = (
             os.environ.get("GROQ_API_KEY")
             or os.environ.get("GROQ_KEY")
             or os.environ.get("GROQ")
             or os.environ.get("GROQ_TOKEN")
         )
+
+        if self.path == "/modelos":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.end_headers()
+            if not groq_key:
+                self.wfile.write(b'{"erro": "Sem chave Groq"}')
+                return
+            url = "https://api.groq.com/openai/v1/models"
+            headers = {"Authorization": f"Bearer {groq_key.strip()}"}
+            try:
+                r = requests.get(url, headers=headers, timeout=10)
+                self.wfile.write(r.text.encode("utf-8"))
+            except Exception as e:
+                self.wfile.write(json.dumps({"erro": str(e)}).encode("utf-8"))
+            return
+
+        self.send_response(200)
+        self.send_header("Content-type", "application/json; charset=utf-8")
+        self.end_headers()
+        tem_groq = bool(groq_key)
         tem_gemini = bool(os.environ.get("GEMINI_API_KEY"))
         provedor = "Groq (Llama 3)" if tem_groq else ("Gemini" if tem_gemini else "Nenhum")
 
@@ -139,7 +197,9 @@ def consultar_ia(pergunta, config):
             "Authorization": f"Bearer {groq_key.strip()}",
             "Content-Type": "application/json",
         }
-        for modelo in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]:
+        modelos = obter_modelos_groq(groq_key)
+
+        for modelo in modelos:
             payload_groq = {
                 "model": modelo,
                 "messages": [
