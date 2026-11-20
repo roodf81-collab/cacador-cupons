@@ -44,6 +44,72 @@ def rodar_servidor_http():
     server.serve_forever()
 
 
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+
+def enviar_digitando(chat_id):
+    """Envia o indicador 'digitando...' no Telegram enquanto a IA processa."""
+    token = cupons.BOT_TOKEN
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendChatAction",
+            json={"chat_id": chat_id, "action": "typing"},
+            timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def consultar_gemini(pergunta, config):
+    """Consulta o modelo Gemini 1.5 Flash para responder dúvidas de cupons e compras."""
+    if not GEMINI_API_KEY:
+        return (
+            "🤖 <b>Olá, Rodrigo!</b>\n\n"
+            "Meu cérebro de Inteligência Artificial ainda não foi conectado. "
+            "Para conversar comigo sobre compras, lojas e cupons, basta adicionar a chave "
+            "<code>GEMINI_API_KEY</code> no painel do Render!\n\n"
+            "<i>Para ver os comandos de controle disponíveis, digite /menu.</i>"
+        )
+
+    lojas_ativas = ", ".join(config.get("lojas_ativas", []))
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+
+    prompt_sistema = (
+        "Você é o assistente inteligente do BOT_ROD, especialista em cupons de desconto, "
+        "compras inteligentes e e-commerce brasileiro (Mercado Livre, Shopee, AliExpress, Amazon). "
+        "Você foi desenvolvido para ajudar o Rodrigo nas compras dele. "
+        f"Atualmente, as lojas ativas no bot dele são: {lojas_ativas}. "
+        "Responda às perguntas dele de forma direta, prestativa, amigável e realista sobre preços, "
+        "regras de cupons, melhores épocas para comprar e dicas de economia. "
+        "Use formatação simples compatível com Telegram (como <b>negrito</b> ou <i>itálico</i>). "
+        "Não use markdown com asteriscos duplos (**), use tags HTML <b>palavra</b> para negrito."
+    )
+
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": pergunta}]}],
+        "systemInstruction": {"parts": [{"text": prompt_sistema}]},
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=25)
+        if resp.status_code == 200:
+            dados = resp.json()
+            cands = dados.get("candidates", [])
+            if cands:
+                partes = cands[0].get("content", {}).get("parts", [])
+                if partes:
+                    texto_resposta = partes[0].get("text", "").strip()
+                    # Converte ** em <b> por segurança
+                    texto_resposta = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", texto_resposta)
+                    return texto_resposta
+        return f"⚠️ Ops, tive uma instabilidade com a IA (Código {resp.status_code}). Tente perguntar novamente!"
+    except Exception as e:
+        return f"⚠️ Erro ao consultar o cérebro da IA: {e}"
+
+
 def processar_update_ao_vivo(u, chat_id, config):
     """Processa eventos do Telegram em tempo real (sub-segundo)."""
     # 1. Detecção automática de Canal de Cupons
@@ -254,10 +320,10 @@ def processar_update_ao_vivo(u, chat_id, config):
         threading.Thread(target=cupons.executar_varredura, daemon=True).start()
 
     else:
-        cupons.enviar_telegram(
-            chat_id,
-            "❓ Comando não reconhecido. Digite <code>/menu</code> para ver as opções disponíveis.",
-        )
+        # Se não for comando com barra, o Gemini responde como assistente pessoal com IA!
+        enviar_digitando(chat_id)
+        resposta_ia = consultar_gemini(texto, config)
+        cupons.enviar_telegram(chat_id, resposta_ia)
 
 
 def loop_escuta_telegram():
